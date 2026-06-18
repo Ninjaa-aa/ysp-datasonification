@@ -1,0 +1,39 @@
+"""
+Sonification Toolkit — generic, dataset-agnostic engine.
+
+Phase 1: additive synthesis from multi-channel tabular data.
+"""
+
+__version__ = "0.1.0"
+
+from sonify.config import SonificationConfig
+from sonify.data_io import load_csv
+from sonify.band_detect import detect_band_columns, confirm_with_user
+from sonify.preprocess import sort_by_row_order, clean, rebin, rebin_wavelengths
+from sonify.mapping import (
+    scale_values,
+    normalize_per_channel,
+    assign_frequencies,
+    load_wavelength_table,
+)
+from sonify.synth import synthesize
+from sonify.playback import play
+from sonify.export import export_wav
+
+__all__ = [
+    "SonificationConfig",
+    "load_csv",
+    "detect_band_columns",
+    "confirm_with_user",
+    "sort_by_row_order",
+    "clean",
+    "rebin",
+    "rebin_wavelengths",
+    "scale_values",
+    "normalize_per_channel",
+    "assign_frequencies",
+    "load_wavelength_table",
+    "synthesize",
+    "play",
+    "export_wav",
+]
