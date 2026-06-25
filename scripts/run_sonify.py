@@ -1,14 +1,18 @@
 #!/usr/bin/env python
 """
-CLI entry point for the borehole sonification toolkit (Phase 1).
+CLI entry point for the borehole sonification toolkit (Phase 1 + Phase 2).
 
 This script wires together the generic ``sonify`` engine with
 dataset-specific defaults for the ice borehole fluorescence example.
 The engine itself is dataset-agnostic.
 
+Phase 2 additions: visual display modes (dots/circles), video export
+with synchronized audio, and optional live animated display.
+
 Usage
 -----
     python scripts/run_sonify.py --input data/raw/...csv --yes --output outputs/test.wav
+    python scripts/run_sonify.py --yes --video-output outputs/preview.mp4
     python scripts/run_sonify.py --help
 """
 
@@ -17,6 +21,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
 
 # Ensure the project root is on sys.path so ``sonify`` package imports work
 # when running ``python scripts/run_sonify.py`` from the project root.
@@ -55,9 +60,11 @@ _DEFAULT_WAVELENGTH = os.path.join(
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Sonify a multi-channel CSV dataset (Phase 1).",
+        description="Sonify a multi-channel CSV dataset (Phase 1 + Phase 2).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+
+    # ── Phase 1 arguments ───────────────────────────────────────────────
     p.add_argument(
         "--input", default=_DEFAULT_INPUT,
         help="Path to the input CSV file",
@@ -69,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-freq", type=float, default=2500.0, help="Highest tone frequency in Hz")
     p.add_argument("--playback-speed", type=float, default=10.0, help="Rows per second")
     p.add_argument("--volume", type=float, default=0.8, help="Master gain 0.0–1.0")
-    p.add_argument("--scale", choices=["linear", "log10", "ln"], default="log10", help="Intensity scaling mode")
+    p.add_argument("--scale", choices=["linear", "log10", "ln"], default="log10", help="Intensity scaling mode (audio)")
     p.add_argument("--freq-mode", choices=["index", "wavelength"], default="index", help="Frequency assignment mode")
     p.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate")
     p.add_argument("--output", type=str, default=None, help="Output .wav path (omit to play through speakers)")
@@ -78,6 +85,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--wavelength-path", default=_DEFAULT_WAVELENGTH,
         help="Path to band-number → wavelength CSV (for --freq-mode wavelength)",
     )
+
+    # ── Phase 2 visual arguments ─────────────────────────────────────────
+    p.add_argument("--visual-mode", choices=["dots", "circles"], default="dots",
+                   help="Visual display mode")
+    p.add_argument("--visual-scale", choices=["linear", "log10", "ln"], default="log10",
+                   help="Intensity scaling mode for visual display (independent of --scale)")
+    p.add_argument("--colormap", type=str, default="plasma",
+                   help="Matplotlib colormap name for visual display")
+    p.add_argument("--show-labels", action="store_true",
+                   help="Show channel index/wavelength labels below each dot/circle")
+    p.add_argument("--video-output", type=str, default=None,
+                   help="Output video path (.mp4 or .avi) with synchronized audio")
+    p.add_argument("--live-display", action="store_true",
+                   help="Show live matplotlib animation during playback")
+    p.add_argument("--video-title", type=str,
+                   default="Sounds of Deep Ice Fluorescence",
+                   help="Title string displayed in visual frames")
+    p.add_argument("--frame-width", type=int, default=1280,
+                   help="Visual frame width in pixels")
+    p.add_argument("--frame-height", type=int, default=720,
+                   help="Visual frame height in pixels")
+
     return p
 
 
@@ -100,6 +129,16 @@ def main() -> None:
         output=args.output,
         yes=args.yes,
         wavelength_path=args.wavelength_path,
+        # Phase 2 visual parameters
+        visual_mode=args.visual_mode,
+        visual_scale=args.visual_scale,
+        colormap=args.colormap,
+        show_labels=args.show_labels,
+        video_output=args.video_output,
+        live_display=args.live_display,
+        video_title=args.video_title,
+        frame_width=args.frame_width,
+        frame_height=args.frame_height,
     )
     config.validate()
     print(f"Config validated: {config.scale} scale, {config.playback_speed} rows/s, "
@@ -138,6 +177,12 @@ def main() -> None:
 
     n_channels = matrix.shape[1]
 
+    # ── Phase 2: Save clean matrix BEFORE audio scaling ───────────────
+    # Visual path applies visual_scale independently on this copy.
+    want_visual = config.video_output or config.live_display
+    if want_visual:
+        clean_matrix = matrix.copy()
+
     # ── 8. Prepare wavelengths (if wavelength mode) ───────────────────────
     wavelengths_array = None
     if config.freq_mode == "wavelength":
@@ -151,7 +196,7 @@ def main() -> None:
         wavelengths_array = wl_per_band
         print(f"Wavelength mode: {wavelengths_array[0]:.1f}-{wavelengths_array[-1]:.1f} nm")
 
-    # ── 9. Scale values ───────────────────────────────────────────────────
+    # ── 9. Scale values (audio) ───────────────────────────────────────────
     matrix = scale_values(matrix, config.scale)
 
     # ── 10. Normalize per-channel ─────────────────────────────────────────
@@ -173,12 +218,87 @@ def main() -> None:
     duration = len(waveform) / config.sample_rate
     print(f"Waveform: {len(waveform)} samples ({duration:.1f}s)")
 
-    # ── 13/14. Export or play ─────────────────────────────────────────────
-    if config.output:
+    # ── 13. Export / play / video ──────────────────────────────────────────
+    #
+    # Pipeline order for video: WAV export → render frames → mux video.
+    # Both the WAV file and the frames must exist before muxing.
+    #
+    temp_wav = False
+    wav_path = None
+
+    if config.video_output:
+        # ── Step 13a: Export WAV to disk (needed for video muxing) ─────
+        if config.output:
+            wav_path = config.output
+        else:
+            # Create a temporary WAV for muxing, will clean up after
+            fd, wav_path = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            temp_wav = True
+        export_wav(waveform, config.sample_rate, wav_path)
+
+        # ── Step 13b: Render visual frames ────────────────────────────
+        from sonify.visualize import apply_visual_scale, render_all_frames
+
+        visual_matrix = apply_visual_scale(clean_matrix, config.visual_scale)
+        depths = df["depth"].values if "depth" in df.columns else None
+
+        frames = render_all_frames(
+            visual_matrix,
+            mode=config.visual_mode,
+            colormap=config.colormap,
+            depths=depths,
+            wavelengths=wavelengths_array,
+            show_labels=config.show_labels,
+            title=config.video_title,
+            fig_width=config.frame_width,
+            fig_height=config.frame_height,
+        )
+
+        # ── Step 13c: Mux audio + video ──────────────────────────────
+        from sonify.video_export import export_video
+
+        export_video(frames, wav_path, config.video_output,
+                     fps=config.playback_speed)
+
+        # Clean up temp WAV if we created one
+        if temp_wav and os.path.isfile(wav_path):
+            os.remove(wav_path)
+            print(f"Cleaned up temporary WAV: {wav_path}")
+
+    elif config.live_display:
+        # ── Live animated display (best-effort sync) ──────────────────
+        from sonify.visualize import apply_visual_scale, live_display
+
+        visual_matrix = apply_visual_scale(clean_matrix, config.visual_scale)
+        depths = df["depth"].values if "depth" in df.columns else None
+
+        # Also export WAV if requested
+        if config.output:
+            export_wav(waveform, config.sample_rate, config.output)
+
+        live_display(
+            visual_matrix, waveform, config.sample_rate,
+            config.playback_speed,
+            mode=config.visual_mode,
+            colormap=config.colormap,
+            depths=depths,
+            wavelengths=wavelengths_array,
+            show_labels=config.show_labels,
+            title=config.video_title,
+            fig_width=config.frame_width,
+            fig_height=config.frame_height,
+        )
+
+    elif config.output:
+        # ── Audio-only WAV export (Phase 1 behavior) ──────────────────
         export_wav(waveform, config.sample_rate, config.output)
+
     else:
+        # ── Audio-only speaker playback (Phase 1 behavior) ────────────
         play(waveform, config.sample_rate)
 
 
 if __name__ == "__main__":
     main()
+

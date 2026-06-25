@@ -1,13 +1,14 @@
 """
 SonificationConfig — all user-tunable parameters with validation.
 
-Every CLI parameter from the Phase 1 spec lives here as a typed field.
-The CLI runner (scripts/run_sonify.py) builds one of these from argparse,
-calls validate(), then passes it down the pipeline.
+Every CLI parameter from the Phase 1 and Phase 2 specs lives here as a typed
+field.  The CLI runner (scripts/run_sonify.py) builds one of these from
+argparse, calls validate(), then passes it down the pipeline.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
@@ -30,6 +31,17 @@ class SonificationConfig:
     output: Optional[str] = None  # path for .wav; None = play through speakers
     yes: bool = False  # skip interactive band-confirmation prompt
     wavelength_path: Optional[str] = None  # path to wavelength reference CSV
+
+    # ── Phase 2: visual display parameters ────────────────────────────────
+    visual_mode: Literal["dots", "circles"] = "dots"
+    visual_scale: Literal["linear", "log10", "ln"] = "log10"
+    colormap: str = "plasma"
+    show_labels: bool = False
+    video_output: Optional[str] = None  # path for .mp4/.avi output
+    live_display: bool = False
+    video_title: str = "Sounds of Deep Ice Fluorescence"
+    frame_width: int = 1280
+    frame_height: int = 720
 
     def validate(self) -> None:
         """Validate all parameters, raising ValueError on bad input."""
@@ -82,3 +94,32 @@ class SonificationConfig:
                 f"row_end ({self.row_end}) must be greater than "
                 f"row_start ({self.row_start})"
             )
+
+        # ── Phase 2 visual validation ─────────────────────────────────────
+        if self.visual_mode not in ("dots", "circles"):
+            raise ValueError(
+                f"visual_mode must be 'dots' or 'circles', got '{self.visual_mode}'"
+            )
+
+        if self.visual_scale not in ("linear", "log10", "ln"):
+            raise ValueError(
+                f"visual_scale must be 'linear', 'log10', or 'ln', "
+                f"got '{self.visual_scale}'"
+            )
+
+        if self.frame_width <= 0:
+            raise ValueError(f"frame_width must be positive, got {self.frame_width}")
+        if self.frame_height <= 0:
+            raise ValueError(f"frame_height must be positive, got {self.frame_height}")
+
+        if self.video_output is not None:
+            if not self.video_output.lower().endswith((".mp4", ".avi")):
+                raise ValueError(
+                    f"video_output must end in .mp4 or .avi, "
+                    f"got '{self.video_output}'"
+                )
+            out_dir = os.path.dirname(self.video_output) or "."
+            if not os.path.isdir(out_dir):
+                raise ValueError(
+                    f"video_output directory does not exist: '{out_dir}'"
+                )
