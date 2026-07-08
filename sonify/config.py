@@ -1,9 +1,9 @@
 """
 SonificationConfig — all user-tunable parameters with validation.
 
-Every CLI parameter from the Phase 1 and Phase 2 specs lives here as a typed
-field.  The CLI runner (scripts/run_sonify.py) builds one of these from
-argparse, calls validate(), then passes it down the pipeline.
+Every CLI parameter from Phases 1–4 lives here as a typed field.  The CLI
+runner (scripts/run_sonify.py) builds one of these from argparse, calls
+validate(), then passes it down the pipeline.
 """
 
 from __future__ import annotations
@@ -11,6 +11,19 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Literal, Optional
+
+
+@dataclass
+class ParameterMap:
+    """Controls which data column drives tone (pitch) and intensity (volume).
+
+    Defaults reproduce the Phase 1/2 behavior: tone from band index,
+    intensity from each band's own value.
+    """
+    tone_source: Literal["band_index", "wavelength", "column"] = "band_index"
+    tone_column: str | None = None       # used when tone_source == "column"
+    intensity_source: Literal["band_value", "column"] = "band_value"
+    intensity_column: str | None = None  # used when intensity_source == "column"
 
 
 @dataclass
@@ -42,6 +55,15 @@ class SonificationConfig:
     video_title: str = "Sounds of Deep Ice Fluorescence"
     frame_width: int = 1280
     frame_height: int = 720
+
+    # ── Phase 3: trail display, channels, parameter mapping ───────────────
+    trail_rows: int = 5  # number of rows visible simultaneously in trail
+    max_frames: int = 500  # safety cap for render_all_frames()
+    param_map: ParameterMap = field(default_factory=ParameterMap)
+
+    # ── Phase 4: minimap, output naming ───────────────────────────────────
+    show_minimap: bool = False
+    output_name: Optional[str] = None  # base name for output files
 
     def validate(self) -> None:
         """Validate all parameters, raising ValueError on bad input."""
@@ -123,3 +145,37 @@ class SonificationConfig:
                 raise ValueError(
                     f"video_output directory does not exist: '{out_dir}'"
                 )
+
+        # ── Phase 3 validation ────────────────────────────────────────────
+        if not (1 <= self.trail_rows <= 20):
+            raise ValueError(
+                f"trail_rows must be in [1, 20], got {self.trail_rows}"
+            )
+
+        if self.max_frames < 1:
+            raise ValueError(
+                f"max_frames must be >= 1, got {self.max_frames}"
+            )
+
+        # Parameter mapping validation
+        pm = self.param_map
+        if pm.tone_source not in ("band_index", "wavelength", "column"):
+            raise ValueError(
+                f"tone_source must be 'band_index', 'wavelength', or 'column', "
+                f"got '{pm.tone_source}'"
+            )
+        if pm.tone_source == "column" and not pm.tone_column:
+            raise ValueError(
+                "tone_column must be specified when tone_source is 'column'"
+            )
+
+        if pm.intensity_source not in ("band_value", "column"):
+            raise ValueError(
+                f"intensity_source must be 'band_value' or 'column', "
+                f"got '{pm.intensity_source}'"
+            )
+        if pm.intensity_source == "column" and not pm.intensity_column:
+            raise ValueError(
+                "intensity_column must be specified when "
+                "intensity_source is 'column'"
+            )

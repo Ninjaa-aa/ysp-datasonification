@@ -1,132 +1,154 @@
-# Borehole Sonification Toolkit
+# Sounds of Deep Ice Fluorescence
 
-**BMSIS YSP — Sounds of Deep Ice Fluorescence**
+**BMSIS Young Scientist Program — Sonification Toolkit**
 
-A generic, open-source Python toolkit that sonifies multi-channel tabular datasets and generates synchronized visual animations. The 32-channel ice borehole fluorescence dataset (WATSON instrument) is the primary example case, but the engine works on any CSV with band/channel-like columns.
-
----
-
-## What It Does
-
-This toolkit translates multi-channel depth-series or time-series data into both sound (sonification) and video (visualization). 
-
-### 1. Audio Sonification (Phase 1)
-- **Additive Synthesis**: Synthesizes a composite multi-tone waveform where each data channel controls the amplitude of a dedicated sine wave oscillator.
-- **Dynamic Range Compression**: Supports `linear`, `log10`, and `ln` intensity scaling modes to bring out quiet background features without clipping loud peaks.
-- **Flexible Frequency Mapping**:
-  - `index` mode: Distributes frequencies logarithmically based on channel index.
-  - `wavelength` mode: Map frequencies logarithmically based on actual physical wavelengths (e.g., UV/visible spectrometer bands).
-- **Phase-Continuous Transitions**: Smoothly carries oscillator phases across row boundaries with raised-cosine crossfading to prevent acoustic clicks.
-- **Per-Channel Normalization**: Independently normalizes each channel's range to ensure quiet bands remain audible at their peak locations.
-
-### 2. Synchronized Visualization & Video Export (Phase 2)
-- **Independent Visual Scaling**: Supports independent scaling (`linear`, `log10`, `ln`) for visual representation, decoupling visual intensity from audio volume.
-- **Display Modes**:
-  - `dots`: Horizontal line of circles where radius and brightness scale with channel intensity.
-  - `circles`: Nested concentric rings representing channel intensities.
-- **Flexible Styling**: Custom colormaps (via Matplotlib) and optional channel/wavelength label overlays.
-- **Live Playback Window**: Optional live-rendering window synchronized with audio playback through local speakers.
-- **Muxed Video Export**: Renders frames and merges them with the generated WAV audio track into a single `.mp4` or `.avi` video using OpenCV and MoviePy.
+An open-source Python toolkit that translates multi-channel tabular datasets into sound (sonification) and synchronized video (visualization). Built for the BMSIS Young Scientist Program under the guidance of Dr. Michael Malaska (NASA JPL), the primary test case is a 32-channel UV fluorescence scan captured by the WATSON instrument down a Greenland ice borehole — but the engine is fully generic and works on any CSV with band/channel-like columns.
 
 ---
 
-## Installation
-
-Ensure you have Python 3.12 installed.
+## Install
 
 ```bash
-# Set up a virtual environment (using standard venv)
-python -m venv .venv
-.venv\Scripts\activate
+# Clone and enter the repository
+git clone https://github.com/Ninjaa-aa/ysp-datasonification.git
+cd ysp-datasonification
 
-# Upgrade pip and install dependencies
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+# Create and activate a virtual environment
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS/Linux
+
+# Install dependencies
+pip install -r requirements.txt
 ```
 
 > [!NOTE]
-> The heavy video dependencies (`opencv-python` and `moviepy`) are imported lazily. If you do not install them, the audio-only pipeline will still function.
+> `opencv-python` and `moviepy` are only needed for video export. If you only want audio output, the core pipeline works without them.
 
 ---
 
-## How to Run
-
-The main entry point is `scripts/run_sonify.py`.
-
-### 1. Audio-Only Examples
+## Quick Start
 
 ```bash
-# Play sonification directly through speakers
-python scripts/run_sonify.py --yes
+# Sonify the example borehole dataset and export a WAV file
+py scripts/run_sonify.py --yes --row-end 200 --output outputs/quick_start.wav
 
-# Export sonification to a WAV file
-python scripts/run_sonify.py --yes --output outputs/borehole_audio.wav
-
-# Run with wavelength-based frequency mapping and linear scaling
-python scripts/run_sonify.py --yes --freq-mode wavelength --scale linear --output outputs/linear_wavelength.wav
+# Sonify with synchronized video
+py scripts/run_sonify.py --yes --row-end 200 --output-name quick_start
 ```
 
-### 2. Video & Live Display Examples
+The first command produces `outputs/quick_start.wav`. The second produces both `.wav` and `.mp4`.
+
+---
+
+## Full Command Reference
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| **Core** ||||
+| `--input` | str | example dataset | Path to the input CSV file |
+| `--row-start` | int | None (start) | First row index to include (0-based) |
+| `--row-end` | int | None (end) | Last row index (exclusive) |
+| `--n-bins` | int | detected count | Number of output frequency bins (rebins channels) |
+| `--yes` | flag | False | Skip interactive band-confirmation prompt |
+| **Audio** ||||
+| `--min-freq` | float | 150.0 | Lowest tone frequency in Hz |
+| `--max-freq` | float | 2500.0 | Highest tone frequency in Hz |
+| `--playback-speed` | float | 10.0 | Rows per second |
+| `--volume` | float | 0.8 | Master gain (0.0–1.0) |
+| `--scale` | choice | log10 | Intensity scaling: `linear`, `log10`, `ln` |
+| `--freq-mode` | choice | index | Frequency mapping: `index` or `wavelength` |
+| `--wavelength-path` | str | reference table | Path to band → wavelength CSV |
+| `--sample-rate` | int | 44100 | Audio sample rate in Hz |
+| `--output` | str | None (speakers) | Output .wav file path |
+| **Parameter Mapping** ||||
+| `--tone-source` | choice | band_index | Pitch driver: `band_index`, `wavelength`, `column` |
+| `--tone-column` | str | None | Column name when `--tone-source column` |
+| `--intensity-source` | choice | band_value | Volume driver: `band_value`, `column` |
+| `--intensity-column` | str | None | Column name when `--intensity-source column` |
+| **Visual** ||||
+| `--visual-mode` | choice | dots | Display style: `dots` or `circles` |
+| `--visual-scale` | choice | log10 | Visual intensity scaling: `linear`, `log10`, `ln` |
+| `--colormap` | str | plasma | Matplotlib colormap name |
+| `--show-labels` | flag | False | Show channel labels below each marker |
+| `--video-output` | str | None | Output video path (.mp4 or .avi) |
+| `--live-display` | flag | False | Show live animation during playback |
+| `--video-title` | str | "Sounds..." | Title text in video frames |
+| `--frame-width` | int | 1280 | Frame width in pixels |
+| `--frame-height` | int | 720 | Frame height in pixels |
+| `--trail-rows` | int | 5 | Trail rows visible simultaneously (1–20) |
+| `--max-frames` | int | 500 | Max frames to render (safety cap) |
+| `--show-minimap` | flag | False | Show overview minimap in video |
+| **Output** ||||
+| `--output-name` | str | None | Base name → `outputs/NAME.wav` + `outputs/NAME.mp4` |
+
+---
+
+## Tuning Guide
+
+Based on listening tests with the 4000-row borehole fluorescence dataset:
+
+- **Playback Speed: `10` rows/sec** — Each row maps to 100 ms, allowing comfortable pitch and timbre resolution. The full 4000-row scan compresses to ~6:40.
+- **Intensity Scale: `log10`** — Fluorescence data has localized bright peaks over a quiet baseline. Log scaling compresses dynamic range so subtle baseline variations become audible alongside peaks.
+- **Frequency Mode: `wavelength`** — Maps channels to log-spaced frequencies according to their physical wavelengths (275–446 nm). This translates the UV/visible spectrum directly into the audible range, making spectral shifts perceptually meaningful.
+
+---
+
+## Dataset Format
+
+The toolkit expects a **CSV file** with:
+
+1. **Band/channel columns** — Numeric columns with names matching one of these patterns:
+   - `Band_1_bc`, `Band_2_bc`, ... (WATSON format)
+   - `Channel_1`, `Channel_2`, ...
+   - `Band_1`, `Band_2`, ...
+   - `Band1`, `Band2`, ...
+   - `Ch_1`, `Ch_2`, ...
+   - `ch1`, `ch2`, ...
+
+2. **Optional metadata columns** — `row_num` (for sorting), `depth` (for display), etc. These are auto-excluded from sonification.
+
+3. **Noise/housekeeping columns** — Columns containing `std`, `sdt`, `max`, `min`, or `err` tokens are automatically excluded.
+
+### Auto-detection
+
+The engine scans all column names against the patterns above, sorts matches by their extracted numeric index, and presents them for confirmation. No hardcoded column count — works with 2 channels or 2048.
+
+### Using with a non-borehole dataset
 
 ```bash
-# Export a full video (.mp4) with default dots visualization and synchronized audio
-python scripts/run_sonify.py --yes --video-output outputs/borehole_dots.mp4
-
-# Export a video using circles mode, plasma colormap, and channel/wavelength labels
-python scripts/run_sonify.py --yes --visual-mode circles --colormap plasma --show-labels --video-output outputs/borehole_circles.mp4
-
-# Play audio through speakers and show a live, real-time animated display window
-python scripts/run_sonify.py --yes --live-display
+py scripts/run_sonify.py --input your_data.csv --yes --output output.wav
 ```
 
----
-
-## CLI Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| **Core Options** | | |
-| `--input` | example dataset | Path to the input CSV file |
-| `--row-start` | `None` (start) | First row index to include (0-based) |
-| `--row-end` | `None` (end) | Last row index to include (exclusive) |
-| `--n-bins` | detected count | Number of output frequency bins (channels to rebin to) |
-| `--yes` | `False` | Skip interactive band-confirmation prompt |
-| **Audio Options** | | |
-| `--min-freq` | `150.0` | Lowest tone frequency in Hz |
-| `--max-freq` | `2500.0` | Highest tone frequency in Hz |
-| `--playback-speed` | `10.0` | Playback speed in rows per second |
-| `--volume` | `0.8` | Master gain volume (0.0 to 1.0) |
-| `--scale` | `log10` | Intensity scaling mode for audio: `linear`, `log10`, `ln` |
-| `--freq-mode` | `index` | Frequency mapping mode: `index` or `wavelength` |
-| `--wavelength-path`| reference table | Path to band-to-wavelength mapping CSV |
-| `--sample-rate` | `44100` | Audio sample rate in Hz |
-| `--output` | `None` (speakers) | Output .wav file path |
-| **Visual Options** | | |
-| `--visual-mode` | `dots` | Visual display mode: `dots`, `circles` |
-| `--visual-scale` | `log10` | Intensity scaling mode for visuals: `linear`, `log10`, `ln` |
-| `--colormap` | `plasma` | Matplotlib colormap name (e.g., `viridis`, `plasma`, `inferno`) |
-| `--show-labels` | `False` | Show channel index or wavelength labels below elements |
-| `--video-output` | `None` | Path to export the final .mp4 or .avi video |
-| `--live-display` | `False` | Show a live matplotlib animation window during speaker playback |
-| `--video-title` | "Sounds..." | Title text displayed at the top of the video frames |
-| `--frame-width` | `1280` | Frame width in pixels |
-| `--frame-height` | `720` | Frame height in pixels |
+If your columns don't match the recognized patterns, rename them to one of the supported formats (e.g., `Channel_1`, `Channel_2`, etc.).
 
 ---
 
-## Physical & Psychoacoustic Tuning Decisions
+## Project Structure
 
-Below are the recommended defaults for analyzing the 4000-row borehole dataset:
-
-- **Playback Speed (`10` rows/second)**: At 10 rows per second, each data row is mapped to a 100 ms acoustic segment. This allows the human ear to comfortably resolve both pitch (frequency) and relative volumes (timbre) of the channels. The full 4000-row scan is condensed into a digestible 6 minutes and 40 seconds.
-- **Intensity Scale (`log10`)**: Tabular fluorescence values exhibit highly localized peaks with quiet background baseline fluctuations. Linear scaling forces the peaks to dominate, rendering baseline variations silent. Logarithmic scaling compresses the dynamic range, rendering subtle structural changes in the baseline clearly audible.
-- **Frequency Mode (`wavelength`)**: Rather than arbitrary index-based spacing, this mode maps channels to log-spaced frequencies according to their actual physical wavelengths (275 nm to 446 nm). Longer wavelengths (near-UV/visible) map to higher pitches, and shorter wavelengths (deep UV) map to lower pitches, translating the physical spectrum directly to the audible range.
+```
+sonify/              # Generic, dataset-agnostic engine
+  config.py          # SonificationConfig + ParameterMap dataclasses
+  data_io.py         # CSV loader
+  band_detect.py     # Auto-detect band columns + interactive confirmation UI
+  preprocess.py      # Clean, sort, rebin
+  mapping.py         # Scale, normalize, frequency assignment, parameter mapping
+  synth.py           # Phase-continuous additive synthesis
+  playback.py        # Speaker playback (sounddevice)
+  export.py          # WAV file export
+  visualize.py       # Trail-aware frame rendering (scatter + heatmap modes)
+  video_export.py    # Video muxing (OpenCV + MoviePy)
+scripts/
+  run_sonify.py      # CLI entry point with structured logging
+tests/               # 51+ unit tests
+data/raw/            # Raw datasets
+data/reference/      # Wavelength reference table
+outputs/             # Generated .wav and .mp4 files
+```
 
 ---
 
 ## Running Tests
-
-Verify the installation and engine correctness by running the test suite:
 
 ```bash
 py -m pytest tests/ -v
@@ -134,24 +156,17 @@ py -m pytest tests/ -v
 
 ---
 
-## Project Structure
+## Credits
 
-```
-sonify/              # Generic, reusable, dataset-agnostic engine
-  config.py          # SonificationConfig dataclass and validations
-  data_io.py         # CSV loader
-  band_detect.py     # Auto-detect band/channel columns
-  preprocess.py      # Clean, sort, rebin
-  mapping.py         # Scale, normalize, frequency assignment
-  synth.py           # Additive synthesis engine with phase continuity
-  playback.py        # Speaker playback engine
-  export.py          # WAV file export
-  visualize.py       # Frame rendering and live display window
-  video_export.py    # Silent video writer and audio muxer
-scripts/
-  run_sonify.py      # CLI entry point (dataset-specific defaults)
-tests/               # Comprehensive unit tests
-data/raw/            # Raw datasets
-data/reference/      # Wavelength reference table
-outputs/             # Generated .wav and .mp4 files
-```
+- **Dr. Michael Malaska** — NASA Jet Propulsion Laboratory, project advisor
+- **BMSIS Young Scientist Program** — Program framework and mentorship
+- **WATSON Instrument** — UV fluorescence spectrometer; band wavelength data from:
+  Eshelman, E., Daly, M.G., Slater, G., Bonaccorsi, R., & Pappalardo, R.T. (2019).
+  *WATSON: a Wide-Angle Topographic Sensor for Organics at Night.*
+  Astrobiology, 19(7), 885–905. DOI: [10.1089/ast.2018.1925](https://doi.org/10.1089/ast.2018.1925)
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.

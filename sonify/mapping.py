@@ -185,3 +185,84 @@ def load_wavelength_table(path: str) -> dict[int, float]:
     band_col = df.columns[0]
     wl_col = df.columns[1]
     return dict(zip(df[band_col].astype(int), df[wl_col].astype(float)))
+
+
+# ---------------------------------------------------------------------------
+# Parameter mapping (Phase 3)
+# ---------------------------------------------------------------------------
+
+def map_tone_from_column(
+    column_values: np.ndarray,
+    min_freq: float,
+    max_freq: float,
+) -> np.ndarray:
+    """Map a per-row scalar column to per-row frequencies in [min_freq, max_freq].
+
+    Normalizes the column's range to the frequency range (log-spaced).
+    Returns array of shape ``(n_rows,)`` — one frequency per row.
+
+    Parameters
+    ----------
+    column_values : np.ndarray
+        1-D array of per-row scalar values.
+    min_freq, max_freq : float
+        Frequency window in Hz.
+
+    Returns
+    -------
+    np.ndarray
+        1-D array of per-row frequencies in Hz.
+    """
+    values = column_values.astype(np.float64)
+    v_min, v_max = values.min(), values.max()
+
+    if v_max == v_min:
+        # Constant column → all frequencies at geometric mean
+        return np.full(len(values), np.sqrt(min_freq * max_freq))
+
+    # Normalize to [0, 1]
+    t = (values - v_min) / (v_max - v_min)
+
+    # Map to [min_freq, max_freq] in log-space
+    log_min = np.log(min_freq)
+    log_max = np.log(max_freq)
+    freqs = np.exp(log_min + t * (log_max - log_min))
+
+    return freqs
+
+
+def apply_intensity_column(
+    amplitude_matrix: np.ndarray,
+    column_values: np.ndarray,
+) -> np.ndarray:
+    """Multiply each row's amplitudes by the corresponding column value.
+
+    The column values are first normalized to [0, 1] so they act as a
+    per-row global amplitude multiplier.
+
+    Parameters
+    ----------
+    amplitude_matrix : np.ndarray
+        2-D array ``(n_rows, n_channels)``.
+    column_values : np.ndarray
+        1-D array ``(n_rows,)`` of scalar multipliers.
+
+    Returns
+    -------
+    np.ndarray
+        Modulated copy of the amplitude matrix.
+    """
+    values = column_values.astype(np.float64)
+    v_min, v_max = values.min(), values.max()
+
+    if v_max == v_min:
+        # Constant column → no modulation (or silence if all zero)
+        if v_max == 0:
+            return np.zeros_like(amplitude_matrix)
+        normalized = np.ones(len(values))
+    else:
+        normalized = (values - v_min) / (v_max - v_min)
+
+    # Multiply each row by its scalar
+    return amplitude_matrix * normalized[:, np.newaxis]
+

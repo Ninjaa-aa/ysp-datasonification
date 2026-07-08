@@ -116,3 +116,48 @@ class TestAssignFrequencies:
         assert len(freqs) == 8
         assert freqs.min() >= 150.0 - 0.01
         assert freqs.max() <= 2500.0 + 0.01
+
+
+class TestMapToneFromColumn:
+    """Phase 3: column-driven frequency mapping."""
+
+    def test_map_tone_from_column(self):
+        """Output length matches input, all values within [min_freq, max_freq]."""
+        from sonify.mapping import map_tone_from_column
+
+        column_values = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        min_freq, max_freq = 200.0, 4000.0
+
+        freqs = map_tone_from_column(column_values, min_freq, max_freq)
+
+        assert len(freqs) == len(column_values)
+        assert freqs.min() >= min_freq - 0.01
+        assert freqs.max() <= max_freq + 0.01
+        # Should be monotonically increasing (input is monotonically increasing)
+        assert all(freqs[i] < freqs[i + 1] for i in range(len(freqs) - 1))
+
+
+class TestApplyIntensityColumn:
+    """Phase 3: column-driven intensity modulation."""
+
+    def test_apply_intensity_column(self):
+        """Zero column value produces silent row; nonzero scales correctly."""
+        from sonify.mapping import apply_intensity_column
+
+        amplitude_matrix = np.array([
+            [0.5, 0.8],
+            [0.3, 0.6],
+            [1.0, 1.0],
+        ])
+        # Column values: first row min (becomes 0), last row max (becomes 1)
+        column_values = np.array([0.0, 5.0, 10.0])
+
+        result = apply_intensity_column(amplitude_matrix, column_values)
+
+        assert result.shape == amplitude_matrix.shape
+        # First row (column=0, normalized to 0) → all zeros
+        np.testing.assert_array_almost_equal(result[0], [0.0, 0.0])
+        # Last row (column=10, normalized to 1) → unchanged
+        np.testing.assert_array_almost_equal(result[2], [1.0, 1.0])
+        # Middle row (column=5, normalized to 0.5) → scaled by 0.5
+        np.testing.assert_array_almost_equal(result[1], [0.15, 0.3])

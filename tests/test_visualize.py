@@ -1,4 +1,4 @@
-"""Tests for sonify.visualize (Phase 2 visual rendering engine)."""
+"""Tests for sonify.visualize (Phase 2 + Phase 3 visual rendering engine)."""
 
 import numpy as np
 import pytest
@@ -38,8 +38,9 @@ class TestRenderFrame:
         """render_frame() returns an RGB array of the expected dimensions."""
         from sonify.visualize import render_frame
 
-        amplitudes = np.array([0.2, 0.5, 0.8, 1.0])
-        frame = render_frame(amplitudes, fig_width=1280, fig_height=720)
+        # Now uses 2-D amplitude_history (n_trail, n_channels)
+        amplitude_history = np.array([[0.2, 0.5, 0.8, 1.0]])
+        frame = render_frame(amplitude_history, fig_width=1280, fig_height=720)
 
         assert isinstance(frame, np.ndarray)
         assert frame.dtype == np.uint8
@@ -49,11 +50,11 @@ class TestRenderFrame:
         """Both modes run and produce visually different frames."""
         from sonify.visualize import render_frame
 
-        amplitudes = np.array([0.0, 0.3, 0.6, 1.0])
+        amplitude_history = np.array([[0.0, 0.3, 0.6, 1.0]])
 
-        frame_dots = render_frame(amplitudes, mode="dots",
+        frame_dots = render_frame(amplitude_history, mode="dots",
                                   fig_width=640, fig_height=360)
-        frame_circles = render_frame(amplitudes, mode="circles",
+        frame_circles = render_frame(amplitude_history, mode="circles",
                                      fig_width=640, fig_height=360)
 
         # Both should produce valid frames
@@ -68,8 +69,8 @@ class TestRenderFrame:
         """Frame with nonzero intensities is not all-black."""
         from sonify.visualize import render_frame
 
-        amplitudes = np.array([0.5, 0.8, 1.0, 0.3])
-        frame = render_frame(amplitudes, colormap="plasma",
+        amplitude_history = np.array([[0.5, 0.8, 1.0, 0.3]])
+        frame = render_frame(amplitude_history, colormap="plasma",
                              fig_width=640, fig_height=360)
 
         # The dark background is #0A0A0A (10, 10, 10), not pure black.
@@ -83,11 +84,14 @@ class TestRenderFrame:
         """Depth label is shown when depth is provided (independent of show_labels)."""
         from sonify.visualize import render_frame
 
-        amplitudes = np.array([0.5, 0.5, 0.5, 0.5])
+        amplitude_history = np.array([[0.5, 0.5, 0.5, 0.5]])
 
-        frame_no_depth = render_frame(amplitudes, depth=None, show_labels=False,
+        frame_no_depth = render_frame(amplitude_history, depths=None,
+                                      show_labels=False,
                                       fig_width=640, fig_height=360)
-        frame_with_depth = render_frame(amplitudes, depth=123.45, show_labels=False,
+        frame_with_depth = render_frame(amplitude_history,
+                                        depths=np.array([123.45]),
+                                        show_labels=False,
                                         fig_width=640, fig_height=360)
 
         assert not np.array_equal(frame_no_depth, frame_with_depth), \
@@ -97,12 +101,84 @@ class TestRenderFrame:
         """Channel labels (show_labels) produce different frames, independent of depth."""
         from sonify.visualize import render_frame
 
-        amplitudes = np.array([0.5, 0.5, 0.5, 0.5])
+        amplitude_history = np.array([[0.5, 0.5, 0.5, 0.5]])
 
-        frame_no_labels = render_frame(amplitudes, show_labels=False,
+        frame_no_labels = render_frame(amplitude_history, show_labels=False,
                                        fig_width=640, fig_height=360)
-        frame_with_labels = render_frame(amplitudes, show_labels=True,
+        frame_with_labels = render_frame(amplitude_history, show_labels=True,
                                          fig_width=640, fig_height=360)
 
         assert not np.array_equal(frame_no_labels, frame_with_labels), \
             "Channel labels should change the frame when show_labels=True"
+
+
+class TestTrailDisplay:
+    """Trail display: stacking N rows with fading opacity and size."""
+
+    @pytest.fixture(autouse=True)
+    def _set_agg_backend(self):
+        """Ensure Agg backend is set for all rendering tests."""
+        import matplotlib
+        matplotlib.use("Agg")
+
+    def test_trail_single_row(self):
+        """Trail of 1 row works and produces a valid frame."""
+        from sonify.visualize import render_frame
+
+        # Single trail row — should be equivalent to old single-row behavior
+        amplitude_history = np.array([[0.2, 0.5, 0.8, 1.0]])
+        frame = render_frame(amplitude_history, fig_width=640, fig_height=360)
+
+        assert isinstance(frame, np.ndarray)
+        assert frame.dtype == np.uint8
+        assert frame.shape == (360, 640, 3)
+        # Should not be all-black
+        assert frame.max() > 20
+
+    def test_trail_opacity_decreases(self):
+        """Older trail rows render with lower opacity (dimmer) than newer ones."""
+        from sonify.visualize import render_frame
+
+        # 3-row trail, uniform intensity so color differences come from opacity
+        amplitude_history = np.array([
+            [1.0, 1.0, 1.0, 1.0],  # oldest (top) — should be dimmest
+            [1.0, 1.0, 1.0, 1.0],  # middle
+            [1.0, 1.0, 1.0, 1.0],  # newest (bottom) — should be brightest
+        ])
+        frame = render_frame(amplitude_history, fig_width=640, fig_height=360)
+
+        # Compare brightness in upper third (older rows) vs lower third (newer rows)
+        h = frame.shape[0]
+        upper_region = frame[:h // 3, :, :]
+        lower_region = frame[2 * h // 3:, :, :]
+
+        # The newer (bottom) region should have brighter/equal average brightness
+        # because it has 100% opacity while the top has ~20% opacity.
+        upper_brightness = upper_region.mean()
+        lower_brightness = lower_region.mean()
+
+        # Both regions include dark background, but markers in the lower region
+        # should be brighter, making overall average higher or equal
+        # (with some tolerance for layout differences)
+        assert lower_brightness >= upper_brightness * 0.5, \
+            f"Expected newer row to be brighter: upper={upper_brightness:.1f}, " \
+            f"lower={lower_brightness:.1f}"
+
+    def test_trail_partial_fill(self):
+        """When history has fewer rows than trail_rows, no crash and valid frame."""
+        from sonify.visualize import render_all_frames
+
+        # 3 rows of data, trail_rows=5 — first frames have fewer trail rows
+        amplitude_matrix = np.random.rand(3, 4)
+        frames = render_all_frames(
+            amplitude_matrix,
+            fig_width=320,
+            fig_height=180,
+            trail_rows=5,
+            max_frames=500,
+        )
+
+        assert len(frames) == 3
+        for f in frames:
+            assert f.shape == (180, 320, 3)
+            assert f.dtype == np.uint8

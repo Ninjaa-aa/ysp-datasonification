@@ -30,7 +30,9 @@ def synthesize(
     amplitude_matrix : np.ndarray
         2-D array ``(n_rows, n_channels)`` with values in ``[0, 1]``.
     freqs : np.ndarray
-        1-D array of length ``n_channels``, frequencies in Hz.
+        Either 1-D array of length ``n_channels`` (fixed per-channel
+        frequencies), or 2-D array of shape ``(n_rows, n_channels)``
+        (per-row frequencies, for column-driven tone mapping).
     seconds_per_row : float
         Duration of each row segment (= ``1 / playback_speed``).
     sample_rate : int
@@ -48,6 +50,9 @@ def synthesize(
 
     if segment_samples < 1:
         segment_samples = 1
+
+    # Determine if freqs are per-row or fixed
+    per_row_freqs = freqs.ndim == 2
 
     # Pre-compute fade envelope (raised-cosine), capped so at least half
     # the segment stays at full amplitude.
@@ -78,9 +83,12 @@ def synthesize(
     for row_idx in range(n_rows):
         segment = np.zeros(segment_samples, dtype=np.float64)
 
+        # Get frequencies for this row
+        row_freqs = freqs[row_idx] if per_row_freqs else freqs
+
         for ch in range(n_channels):
             amp = amplitude_matrix[row_idx, ch]
-            freq = freqs[ch]
+            freq = row_freqs[ch]
 
             # Generate phase-continuous sine
             angles = two_pi * freq * t + phases[ch]
