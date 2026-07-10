@@ -31,10 +31,12 @@ pip install -r requirements.txt
 
 ```bash
 # Sonify the example borehole dataset and export a WAV file
-py scripts/run_sonify.py --yes --row-end 200 --output outputs/quick_start.wav
+.venv/bin/python3 scripts/run_sonify.py --yes --row-end 200 --output outputs/quick_start.wav
 
-# Sonify with synchronized video
-py scripts/run_sonify.py --yes --row-end 200 --output-name quick_start
+# Sonify with synchronized video (using new Phase 5 parameters)
+.venv/bin/python3 scripts/run_sonify.py --yes --row-end 200 --gain-mode max_log \
+    --timbre chime --sustain 0.3 --marker-shape square --marker-size 150 \
+    --show-colorbar --output-name quick_start
 ```
 
 The first command produces `outputs/quick_start.wav`. The second produces both `.wav` and `.mp4`.
@@ -54,9 +56,11 @@ The first command produces `outputs/quick_start.wav`. The second produces both `
 | **Audio** ||||
 | `--min-freq` | float | 150.0 | Lowest tone frequency in Hz |
 | `--max-freq` | float | 2500.0 | Highest tone frequency in Hz |
-| `--playback-speed` | float | 10.0 | Rows per second |
-| `--volume` | float | 0.8 | Master gain (0.0–1.0) |
-| `--scale` | choice | log10 | Intensity scaling: `linear`, `log10`, `ln` |
+| `--playback-speed` | float | prompt/10.0 | Rows per second (prompts if omitted) |
+| `--gain-mode` | choice | max_linear | Global normalization: `max_linear`, `max_log`, `pct90_linear`, etc. (8 modes) |
+| `--sustain` | float | 0.3 | Blends amplitude from previous row (0.0 to 0.99) |
+| `--timbre` | choice | chime | Synth voice: `sine`, `bell`, or `chime` |
+| `--scale` | choice | log10 | Data scaling before processing: `linear`, `log10`, `ln` |
 | `--freq-mode` | choice | index | Frequency mapping: `index` or `wavelength` |
 | `--wavelength-path` | str | reference table | Path to band → wavelength CSV |
 | `--sample-rate` | int | 44100 | Audio sample rate in Hz |
@@ -69,6 +73,9 @@ The first command produces `outputs/quick_start.wav`. The second produces both `
 | **Visual** ||||
 | `--visual-mode` | choice | dots | Display style: `dots` or `circles` |
 | `--visual-scale` | choice | log10 | Visual intensity scaling: `linear`, `log10`, `ln` |
+| `--marker-shape` | choice | square | Shape of data points: `circle` or `square` |
+| `--marker-size` | int | 120 | Size of markers in the plot |
+| `--show-colorbar/--no-colorbar` | flag | True | Show or hide the intensity colorbar |
 | `--colormap` | str | plasma | Matplotlib colormap name |
 | `--show-labels` | flag | False | Show channel labels below each marker |
 | `--video-output` | str | None | Output video path (.mp4 or .avi) |
@@ -81,7 +88,6 @@ The first command produces `outputs/quick_start.wav`. The second produces both `
 | `--show-minimap` | flag | False | Show overview minimap in video |
 | **Output** ||||
 | `--output-name` | str | None | Base name → `outputs/NAME.wav` + `outputs/NAME.mp4` |
-
 ---
 
 ## Tuning Guide
@@ -89,7 +95,9 @@ The first command produces `outputs/quick_start.wav`. The second produces both `
 Based on listening tests with the 4000-row borehole fluorescence dataset:
 
 - **Playback Speed: `10` rows/sec** — Each row maps to 100 ms, allowing comfortable pitch and timbre resolution. The full 4000-row scan compresses to ~6:40.
-- **Intensity Scale: `log10`** — Fluorescence data has localized bright peaks over a quiet baseline. Log scaling compresses dynamic range so subtle baseline variations become audible alongside peaks.
+- **Gain Mode: `max_log`** — The global log modes (especially `max_log` and `pct90_log`) compress the dynamic range so quiet structure is audible without introducing the extreme noise amplification of the previous per-channel normalizations. The `max_linear` mode leaves the original dynamic range largely intact (often appearing mostly dark/silent except for major peaks).
+- **Timbre: `chime`** — Phase-tracked inharmonic partials inspired by tubular bells provide a shimmering, clear tone that cuts through well at 10 rows/sec. `bell` (harmonic) is also available for a warmer sound.
+- **Sustain: `0.3`** — Leaves a slight trailing echo on each channel so it doesn't sound entirely discrete, but recovers fast enough so rapid features don't blur.
 - **Frequency Mode: `wavelength`** — Maps channels to log-spaced frequencies according to their physical wavelengths (275–446 nm). This translates the UV/visible spectrum directly into the audible range, making spectral shifts perceptually meaningful.
 
 ---
@@ -117,7 +125,7 @@ The engine scans all column names against the patterns above, sorts matches by t
 ### Using with a non-borehole dataset
 
 ```bash
-py scripts/run_sonify.py --input your_data.csv --yes --output output.wav
+.venv/bin/python3 scripts/run_sonify.py --input your_data.csv --yes --output output.wav
 ```
 
 If your columns don't match the recognized patterns, rename them to one of the supported formats (e.g., `Channel_1`, `Channel_2`, etc.).

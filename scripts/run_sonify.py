@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-CLI entry point for the borehole sonification toolkit (Phases 1–4).
+CLI entry point for the borehole sonification toolkit (Phases 1–5).
 
 This script wires together the generic ``sonify`` engine with
 dataset-specific defaults for the ice borehole fluorescence example.
@@ -37,6 +37,7 @@ from sonify.preprocess import sort_by_row_order, clean, rebin, rebin_wavelengths
 from sonify.mapping import (
     scale_values,
     normalize_per_channel,
+    apply_global_gain,
     assign_frequencies,
     load_wavelength_table,
     map_tone_from_column,
@@ -54,6 +55,64 @@ def log(stage: str, message: str) -> None:
     print(f"[{stage:<8s}] {message}")
 
 
+# ── Interactive playback speed prompt (Phase 5) ───────────────────────────
+
+def prompt_playback_speed(n_rows: int, skip: bool) -> float:
+    """Prompt the user to choose a playback speed interactively.
+
+    Parameters
+    ----------
+    n_rows : int
+        Number of rows that will be rendered (for duration calculation).
+    skip : bool
+        If True (--yes flag), return the default without prompting.
+
+    Returns
+    -------
+    float
+        Chosen rows per second.
+    """
+    default = 10.0
+    if skip:
+        return default
+
+    options = [
+        (1, 1.0),
+        (2, 5.0),
+        (3, 10.0),
+        (4, 20.0),
+        (5, 40.0),
+    ]
+
+    print("\nPlayback speed not set. How many rows per second?")
+    print("  Suggested values:")
+    for num, speed in options:
+        total = n_rows / speed
+        label = {1: "very slow, meditative", 2: "slow", 3: "default, recommended",
+                 4: "fast", 5: "very fast"}[num]
+        print(f"    [{num}]  {speed:>4.0f}  rows/sec  ->  {total:>6.1f}s total  ({label})")
+    print("    [c]  Custom value")
+
+    while True:
+        choice = input("\nEnter choice [1-5/c]: ").strip().lower()
+        if choice in ("1", "2", "3", "4", "5"):
+            speed = dict(options)[int(choice)]
+            log("SPEED", f"Playback speed set to {speed} rows/sec")
+            return speed
+        elif choice == "c":
+            while True:
+                try:
+                    custom = float(input("Enter rows per second (e.g. 15): ").strip())
+                    if custom > 0:
+                        log("SPEED", f"Playback speed set to {custom} rows/sec")
+                        return custom
+                    print("Value must be positive.")
+                except ValueError:
+                    print("Please enter a valid number.")
+        else:
+            print("Please enter 1-5 or 'c'.")
+
+
 # ── Dataset-specific defaults ─────────────────────────────────────────────
 _DEFAULT_INPUT = os.path.join(
     _PROJECT_ROOT,
@@ -67,7 +126,7 @@ _DEFAULT_WAVELENGTH = os.path.join(
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Sonify a multi-channel CSV dataset (Phases 1-4).",
+        description="Sonify a multi-channel CSV dataset (Phases 1-5).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -81,13 +140,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n-bins", type=int, default=None, help="Number of output frequency bins (channels); default = detected count")
     p.add_argument("--min-freq", type=float, default=150.0, help="Lowest tone frequency in Hz")
     p.add_argument("--max-freq", type=float, default=2500.0, help="Highest tone frequency in Hz")
-    p.add_argument("--playback-speed", type=float, default=10.0, help="Rows per second")
+    p.add_argument("--playback-speed", type=float, default=None,
+                   help="Rows per second (if omitted, prompts interactively)")
     p.add_argument("--volume", type=float, default=0.8, help="Master gain 0.0-1.0")
     p.add_argument("--scale", choices=["linear", "log10", "ln"], default="log10", help="Intensity scaling mode (audio)")
     p.add_argument("--freq-mode", choices=["index", "wavelength"], default="index", help="Frequency assignment mode")
     p.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate")
     p.add_argument("--output", type=str, default=None, help="Output .wav path (omit to play through speakers)")
-    p.add_argument("--yes", action="store_true", help="Skip interactive band-confirmation prompt")
+    p.add_argument("--yes", action="store_true", help="Skip interactive prompts (band confirmation, playback speed)")
     p.add_argument(
         "--wavelength-path", default=_DEFAULT_WAVELENGTH,
         help="Path to band-number-to-wavelength CSV (for --freq-mode wavelength)",
@@ -138,6 +198,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-name", type=str, default=None,
                    help="Base name for output files (produces outputs/NAME.wav + .mp4)")
 
+    # ── Phase 5 arguments: display ───────────────────────────────────────
+    p.add_argument("--marker-size", type=int, default=120,
+                   help="Marker size for scatter plots (matplotlib s= parameter)")
+    p.add_argument("--marker-shape", choices=["circle", "square"], default="square",
+                   help="Marker shape for scatter plots")
+    p.add_argument("--show-colorbar", action="store_true", default=True,
+                   help="Show intensity colorbar (default: on)")
+    p.add_argument("--no-colorbar", action="store_false", dest="show_colorbar",
+                   help="Hide intensity colorbar")
+
+    # ── Phase 5 arguments: auto-gain ─────────────────────────────────────
+    p.add_argument("--gain-mode",
+                   choices=["max_linear", "max_log", "pct90_linear", "pct90_log",
+                            "median_linear", "median_log", "mean_linear", "mean_log"],
+                   default="max_linear",
+                   help="Global gain normalization mode")
+
+    # ── Phase 5 arguments: sound ─────────────────────────────────────────
+    p.add_argument("--sustain", type=float, default=0.3,
+                   help="Amplitude sustain blend 0.0-1.0 (0=no sustain, 1=max overlap)")
+    p.add_argument("--timbre", choices=["sine", "bell", "chime"], default="chime",
+                   help="Synthesis timbre (sine=pure, bell=harmonic partials, chime=inharmonic)")
+
     return p
 
 
@@ -151,6 +234,15 @@ def main() -> None:
             args.output = os.path.join("outputs", f"{args.output_name}.wav")
         if args.video_output is None:
             args.video_output = os.path.join("outputs", f"{args.output_name}.mp4")
+
+    # ── Handle playback speed sentinel ────────────────────────────────────
+    # playback_speed is None when user didn't set it on CLI.
+    # We need to resolve it before building config, but we also need n_rows
+    # for the interactive prompt.  Set a safe temporary value for config
+    # construction; the actual value will be resolved after row count is known.
+    playback_speed_from_cli = args.playback_speed  # None or float
+    if playback_speed_from_cli is None:
+        args.playback_speed = 10.0  # temporary safe default for validation
 
     # ── 1. Build and validate config ──────────────────────────────────────
     param_map = ParameterMap(
@@ -191,6 +283,13 @@ def main() -> None:
         param_map=param_map,
         show_minimap=args.show_minimap,
         output_name=args.output_name,
+        # Phase 5
+        marker_size=args.marker_size,
+        marker_shape=args.marker_shape,
+        show_colorbar=args.show_colorbar,
+        gain_mode=args.gain_mode,
+        sustain=args.sustain,
+        timbre=args.timbre,
     )
     config.validate()
 
@@ -235,6 +334,12 @@ def main() -> None:
     end = config.row_end or len(df)
     df = df.iloc[start:end].reset_index(drop=True)
 
+    # ── 6b. Interactive playback speed prompt (Phase 5) ───────────────────
+    # Now that we know n_rows, resolve playback speed if the user didn't
+    # set it on CLI.  This MUST happen before synthesis but after row slicing.
+    if playback_speed_from_cli is None:
+        config.playback_speed = prompt_playback_speed(len(df), config.yes)
+
     # ── 7. Clean (NaN→0, negative→0) ─────────────────────────────────────
     matrix = clean(df, band_cols)
     n_nan = int(np.isnan(df[band_cols].to_numpy()).sum())
@@ -275,8 +380,8 @@ def main() -> None:
     matrix = scale_values(matrix, config.scale)
     log("SCALE", f"Applying {config.scale} scale")
 
-    # ── 11. Normalize per-channel ─────────────────────────────────────────
-    matrix = normalize_per_channel(matrix)
+    # ── 11. Global gain normalization (Phase 5, replaces per-channel) ─────
+    matrix = apply_global_gain(matrix, config.gain_mode)
 
     # ── 12. Assign frequencies ────────────────────────────────────────────
     pm = config.param_map
@@ -316,9 +421,11 @@ def main() -> None:
     seconds_per_row = 1.0 / config.playback_speed
     duration_s = len(matrix) * seconds_per_row
     log("SYNTH", f"Synthesizing {len(matrix)} rows at {config.playback_speed} "
-        f"rows/sec -> {duration_s:.1f}s audio")
+        f"rows/sec -> {duration_s:.1f}s audio "
+        f"(timbre={config.timbre}, sustain={config.sustain})")
     waveform = synthesize(
         matrix, freqs, seconds_per_row, config.sample_rate, config.volume,
+        sustain=config.sustain, timbre=config.timbre,
     )
     duration = len(waveform) / config.sample_rate
 
@@ -341,7 +448,9 @@ def main() -> None:
         # ── Step 15b: Render visual frames ────────────────────────────
         from sonify.visualize import apply_visual_scale, render_all_frames
 
-        visual_matrix = apply_visual_scale(clean_matrix, config.visual_scale)
+        visual_matrix = apply_visual_scale(
+            clean_matrix, config.visual_scale, gain_mode=config.gain_mode
+        )
         depths = df["depth"].values if "depth" in df.columns else None
 
         render_start = time.time()
@@ -358,6 +467,9 @@ def main() -> None:
             trail_rows=config.trail_rows,
             max_frames=config.max_frames,
             show_minimap=config.show_minimap,
+            marker_size=config.marker_size,
+            marker_shape=config.marker_shape,
+            show_colorbar=config.show_colorbar,
         )
         render_elapsed = time.time() - render_start
         log("RENDER", f"Rendered {len(frames)} frames -- {render_elapsed:.1f}s elapsed")
@@ -380,7 +492,9 @@ def main() -> None:
         # ── Live animated display (best-effort sync) ──────────────────
         from sonify.visualize import apply_visual_scale, live_display
 
-        visual_matrix = apply_visual_scale(clean_matrix, config.visual_scale)
+        visual_matrix = apply_visual_scale(
+            clean_matrix, config.visual_scale, gain_mode=config.gain_mode
+        )
         depths = df["depth"].values if "depth" in df.columns else None
 
         # Also export WAV if requested
@@ -400,6 +514,9 @@ def main() -> None:
             fig_width=config.frame_width,
             fig_height=config.frame_height,
             trail_rows=config.trail_rows,
+            marker_size=config.marker_size,
+            marker_shape=config.marker_shape,
+            show_colorbar=config.show_colorbar,
         )
 
     elif config.output:

@@ -13,6 +13,8 @@ from sonify.preprocess import sort_by_row_order, clean, rebin, rebin_wavelengths
 from sonify.mapping import (
     scale_values,
     normalize_per_channel,
+    apply_global_gain,
+    compute_gain_reference,
     assign_frequencies,
     load_wavelength_table,
 )
@@ -31,6 +33,8 @@ __all__ = [
     "rebin_wavelengths",
     "scale_values",
     "normalize_per_channel",
+    "apply_global_gain",
+    "compute_gain_reference",
     "assign_frequencies",
     "load_wavelength_table",
     "synthesize",

@@ -87,6 +87,128 @@ def normalize_per_channel(matrix: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Global gain normalization (Phase 5)
+# ---------------------------------------------------------------------------
+
+def compute_gain_reference(matrix: np.ndarray, gain_mode: str) -> tuple[float, float]:
+    """Scan the entire band matrix and compute the gain reference point.
+
+    Always prints all four statistics (global max, 90th percentile, median,
+    mean) so the user can see the full dataset picture on every run.
+
+    Parameters
+    ----------
+    matrix : np.ndarray
+        2-D array ``(n_rows, n_channels)`` — the scaled values.
+    gain_mode : str
+        One of the 8 valid gain modes.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(reference_value, target_amplitude)`` where:
+        - ``reference_value``: the statistical anchor
+        - ``target_amplitude``: what amplitude that reference maps to
+          (1.0 for max/pct90 modes, 0.5 for median/mean modes)
+    """
+    flat = matrix.ravel()
+    global_max = float(np.max(flat))
+    pct90 = float(np.percentile(flat, 90))
+    median = float(np.median(flat))
+    mean = float(np.mean(flat))
+
+    n_rows, n_channels = matrix.shape
+    print(f"[GAIN]    Scanning {n_rows} rows x {n_channels} channels...")
+    print(f"[GAIN]    Global max: {global_max:.4g}   "
+          f"90th pct: {pct90:.4g}   Median: {median:.4g}   Mean: {mean:.4g}")
+
+    # Determine base mode (strip _linear / _log suffix)
+    if gain_mode.startswith("max"):
+        reference = global_max
+        target_amp = 1.0
+        ref_name = "global max"
+    elif gain_mode.startswith("pct90"):
+        reference = pct90
+        target_amp = 1.0
+        ref_name = "90th percentile"
+    elif gain_mode.startswith("median"):
+        reference = median
+        target_amp = 0.5
+        ref_name = "median"
+    elif gain_mode.startswith("mean"):
+        reference = mean
+        target_amp = 0.5
+        ref_name = "mean"
+    else:
+        raise ValueError(f"Unknown gain_mode '{gain_mode}'")
+
+    print(f"[GAIN]    Mode: {gain_mode}  ->  reference = {reference:.4g} "
+          f"(maps to amplitude {target_amp})")
+
+    return reference, target_amp
+
+
+def apply_global_gain(
+    matrix: np.ndarray,
+    gain_mode: str,
+    epsilon: float = 1e-10,
+) -> np.ndarray:
+    """Apply global gain normalization to the full matrix.
+
+    For LINEAR modes:
+        - Compute reference value from gain_mode
+        - If midpoint mode (median/mean): amplitude = (value / reference) * 0.5
+          Values above reference get amplitudes above 0.5, clipped to 1.0
+        - If max/pct90 mode: amplitude = value / reference, clipped to 1.0
+
+    For LOG modes:
+        - Apply log10 transform first (value + epsilon)
+        - Then apply the same reference logic on the log-transformed values
+        - Log transform compresses dynamic range so quiet structure is audible
+          but the gain reference still anchors the loudest point
+
+    Parameters
+    ----------
+    matrix : np.ndarray
+        2-D array ``(n_rows, n_channels)``.
+    gain_mode : str
+        One of the 8 valid gain modes.
+    epsilon : float
+        Small value added before log transforms to avoid log(0).
+
+    Returns
+    -------
+    np.ndarray
+        Normalized array in [0, 1], same shape as input.
+        All values are clipped to [0, 1].
+    """
+    is_log = gain_mode.endswith("_log")
+
+    if is_log:
+        # Apply log10 transform first, then compute reference on log values
+        work = np.log10(np.maximum(matrix, 0) + epsilon)
+    else:
+        work = matrix.copy()
+
+    # Shift so minimum is 0 (log values can be negative)
+    work_min = work.min()
+    work = work - work_min
+
+    reference, target_amp = compute_gain_reference(work, gain_mode)
+
+    if reference <= 0:
+        # All values are the same (or zero) — return zeros
+        return np.zeros_like(matrix)
+
+    # Scale: reference maps to target_amp
+    result = (work / reference) * target_amp
+
+    # Clip to [0, 1]
+    np.clip(result, 0.0, 1.0, out=result)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Frequency assignment
 # ---------------------------------------------------------------------------
 

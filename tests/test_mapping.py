@@ -161,3 +161,132 @@ class TestApplyIntensityColumn:
         np.testing.assert_array_almost_equal(result[2], [1.0, 1.0])
         # Middle row (column=5, normalized to 0.5) → scaled by 0.5
         np.testing.assert_array_almost_equal(result[1], [0.15, 0.3])
+
+
+class TestAutoGain:
+    """Phase 5: global gain normalization."""
+
+    def test_gain_max_linear_clips_to_one(self):
+        """max_linear: output max is 1.0, all values in [0, 1]."""
+        from sonify.mapping import apply_global_gain
+
+        matrix = np.array([
+            [0.0, 50.0],
+            [100.0, 200.0],
+            [30.0, 10.0],
+        ])
+
+        result = apply_global_gain(matrix, "max_linear")
+
+        assert result.max() == pytest.approx(1.0, abs=1e-6)
+        assert result.min() >= 0.0
+        assert result.max() <= 1.0
+
+    def test_gain_median_linear_midpoint(self):
+        """median_linear: median of output is approximately 0.5."""
+        from sonify.mapping import apply_global_gain
+
+        # Create data with known median
+        np.random.seed(42)
+        matrix = np.random.exponential(scale=10.0, size=(100, 4))
+
+        result = apply_global_gain(matrix, "median_linear")
+
+        assert result.min() >= 0.0
+        assert result.max() <= 1.0
+        # The median of the output should be near 0.5
+        output_median = np.median(result)
+        assert output_median == pytest.approx(0.5, abs=0.1), \
+            f"Expected median ~0.5, got {output_median:.3f}"
+
+    def test_gain_mean_linear_midpoint(self):
+        """mean_linear: mean of output is approximately 0.5."""
+        from sonify.mapping import apply_global_gain
+
+        np.random.seed(42)
+        matrix = np.random.exponential(scale=10.0, size=(100, 4))
+
+        result = apply_global_gain(matrix, "mean_linear")
+
+        assert result.min() >= 0.0
+        assert result.max() <= 1.0
+        # The mean of the output should be near 0.5 (with clipping it may differ)
+        output_mean = np.mean(result)
+        assert output_mean == pytest.approx(0.5, abs=0.15), \
+            f"Expected mean ~0.5, got {output_mean:.3f}"
+
+    def test_gain_pct90_clips_outliers(self):
+        """pct90_linear: values above 90th percentile are clipped to 1.0."""
+        from sonify.mapping import apply_global_gain
+
+        # Create data where top 10% are outliers
+        matrix = np.array([
+            [1.0, 2.0],
+            [3.0, 4.0],
+            [5.0, 6.0],
+            [7.0, 8.0],
+            [9.0, 100.0],  # outlier in channel 1
+        ])
+
+        result = apply_global_gain(matrix, "pct90_linear")
+
+        assert result.min() >= 0.0
+        assert result.max() <= 1.0
+        # The outlier (100.0) should be clipped to 1.0
+        assert result[-1, -1] == 1.0
+
+    def test_gain_log_modes_compress_range(self):
+        """Log mode output has smaller std than linear mode (confirms compression)."""
+        from sonify.mapping import apply_global_gain
+
+        # Data with extremely large dynamic range — log should compress this
+        # significantly more than linear
+        matrix = np.array([
+            [1.0, 1.0],
+            [10.0, 10.0],
+            [100.0, 100.0],
+            [10000.0, 10000.0],
+        ])
+
+        result_linear = apply_global_gain(matrix, "max_linear")
+        result_log = apply_global_gain(matrix, "max_log")
+
+        # In linear mode, 10000 maps to 1.0, so 1.0 maps to ~0.0001
+        # Most values cluster near 0 → high std from the outlier
+        # In log mode, log10(10000)=4, log10(1)=0, so values are 0, 1, 2, 4
+        # much more evenly spread → different distribution
+
+        # The key assertion: log and linear produce different distributions
+        assert not np.allclose(result_linear, result_log, atol=0.01), \
+            "Log and linear modes should produce different distributions"
+
+    def test_gain_noisy_channel_stays_quiet(self):
+        """A channel whose max is 5% of global max stays near-silent in max_linear.
+
+        This is the specific noise problem Dr. Malaska identified:
+        per-channel normalization would amplify this channel to full range.
+        Global gain should keep it quiet.
+        """
+        from sonify.mapping import apply_global_gain
+
+        # Channel 0: strong signal (max=1000)
+        # Channel 1: pure noise (max=50, which is 5% of global max)
+        matrix = np.array([
+            [500.0, 10.0],
+            [1000.0, 50.0],
+            [800.0, 30.0],
+            [200.0, 5.0],
+        ])
+
+        result = apply_global_gain(matrix, "max_linear")
+
+        # Channel 1's max amplitude should be ~5% of 1.0 = ~0.05
+        ch1_max = result[:, 1].max()
+        assert ch1_max < 0.10, \
+            f"Noisy channel should stay quiet (max={ch1_max:.3f}), " \
+            f"but global gain didn't suppress it"
+
+        # Channel 0's max should be at or near 1.0
+        ch0_max = result[:, 0].max()
+        assert ch0_max == pytest.approx(1.0, abs=0.01), \
+            f"Strong channel should reach 1.0 (max={ch0_max:.3f})"

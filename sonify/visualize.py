@@ -1,17 +1,18 @@
 """
-Visual rendering engine for the sonification toolkit (Phase 2 + Phase 3).
+Visual rendering engine for the sonification toolkit (Phase 2 + Phase 3 + Phase 5).
 
 Renders per-row intensity data as colored dots/circles (≤ 256 channels) or
 heatmap strips (> 256 channels) on a dark background.  Supports a **trail**
 display — N rows visible simultaneously, with older rows fading in opacity
 and marker size.
 
+Phase 5 additions:
+- Configurable marker size and shape (circle/square)
+- Intensity colorbar
+- Global gain normalization via apply_visual_scale() gain_mode parameter
+
 Fully generic — no hardcoded band count, column names, or dataset-specific
 logic.
-
-The visual layer applies its own intensity scaling (``visual_scale``)
-independently of the audio scaling (``scale``), so audio and visual can
-use different scaling modes simultaneously.
 """
 
 from __future__ import annotations
@@ -37,27 +38,35 @@ SCATTER_CHANNEL_LIMIT = 256
 # Visual scaling (independent of audio scaling)
 # ---------------------------------------------------------------------------
 
-def apply_visual_scale(matrix: np.ndarray, mode: str) -> np.ndarray:
-    """Apply visual-specific scaling then re-normalize to [0, 1].
-
-    Delegates to ``mapping.scale_values()`` + ``mapping.normalize_per_channel()``
-    so no scaling logic is duplicated.
+def apply_visual_scale(
+    matrix: np.ndarray,
+    visual_scale: str,
+    gain_mode: str = "max_linear",
+) -> np.ndarray:
+    """Apply visual-specific scaling then gain normalization to [0, 1].
 
     Parameters
     ----------
     matrix : np.ndarray
         2-D array ``(n_rows, n_channels)``, values >= 0 (pre-clipped by
         ``preprocess.clean()``).
-    mode : str
-        One of ``'linear'``, ``'log10'``, ``'ln'``.
+    visual_scale : str
+        One of ``'linear'``, ``'log10'``, ``'ln'`` — the pre-normalization
+        transform.
+    gain_mode : str
+        The gain normalization mode — same modes as the audio path.
+        Controls the reference point for mapping to [0, 1].
+        Default ``"max_linear"`` preserves backward-compatible behavior.
 
     Returns
     -------
     np.ndarray
         2-D array ``(n_rows, n_channels)`` with all values in [0, 1].
     """
-    scaled = scale_values(matrix, mode)
-    return normalize_per_channel(scaled)
+    from sonify.mapping import apply_global_gain
+
+    scaled = scale_values(matrix, visual_scale)
+    return apply_global_gain(scaled, gain_mode)
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +85,9 @@ def render_frame(
     fig_height: int = 720,
     minimap_image: np.ndarray | None = None,
     minimap_position: float | None = None,
+    marker_size: int = 120,
+    marker_shape: str = "square",
+    show_colorbar: bool = True,
 ) -> np.ndarray:
     """Render one frame as an RGB numpy array.
 
@@ -107,6 +119,12 @@ def render_frame(
         Pre-rendered minimap RGB array to composite into the right panel.
     minimap_position : float or None
         Fractional position [0, 1] within the minimap for the current row.
+    marker_size : int
+        Base marker size for scatter plots (matplotlib ``s=`` parameter).
+    marker_shape : str
+        ``'circle'`` or ``'square'`` — maps to matplotlib markers ``'o'``/``'s'``.
+    show_colorbar : bool
+        If True, add a colorbar showing the intensity-to-color mapping.
 
     Returns
     -------
@@ -116,6 +134,8 @@ def render_frame(
     import matplotlib
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
 
     n_trail, n_channels = amplitude_history.shape
     dpi = 100
@@ -124,6 +144,9 @@ def render_frame(
 
     use_heatmap = n_channels > SCATTER_CHANNEL_LIMIT
     show_minimap = minimap_image is not None and minimap_position is not None
+
+    # Matplotlib marker character
+    marker_char = "s" if marker_shape == "square" else "o"
 
     if show_minimap:
         fig = plt.figure(figsize=(fig_w_inches, fig_h_inches), dpi=dpi)
@@ -192,25 +215,26 @@ def render_frame(
             y_center = y_positions[trail_idx]
 
             if mode == "dots":
-                base_size = max(800 / n_channels, 30)
-                marker_size = base_size * size_frac
-                ax.scatter(
-                    x_positions,
-                    [y_center] * n_channels,
-                    s=marker_size,
-                    c=colors,
-                    edgecolors="none",
-                    zorder=5,
-                )
-            elif mode == "circles":
-                min_size = max(200 / n_channels, 10)
-                max_size = max(3000 / n_channels, 100)
-                sizes = (min_size + amps * (max_size - min_size)) * size_frac
+                # Fixed marker size scaled by trail age
+                sizes = marker_size * size_frac
                 ax.scatter(
                     x_positions,
                     [y_center] * n_channels,
                     s=sizes,
                     c=colors,
+                    marker=marker_char,
+                    edgecolors="none",
+                    zorder=5,
+                )
+            elif mode == "circles":
+                # Size scales with intensity: base + (base * 3 * amp) → 1x to 4x range
+                sizes = (marker_size + marker_size * 3 * amps) * size_frac
+                ax.scatter(
+                    x_positions,
+                    [y_center] * n_channels,
+                    s=sizes,
+                    c=colors,
+                    marker=marker_char,
                     edgecolors="none",
                     zorder=5,
                 )
@@ -260,6 +284,15 @@ def render_frame(
         pad=10,
     )
 
+    # ── Colorbar (Phase 5) ────────────────────────────────────────────
+    if show_colorbar:
+        norm = Normalize(vmin=0, vmax=1)
+        sm = ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, fraction=0.02, pad=0.01)
+        cbar.set_label("Intensity", color="white", fontsize=8)
+        cbar.ax.tick_params(colors="white", labelsize=7)
+
     # ── Minimap panel ─────────────────────────────────────────────────
     if show_minimap and ax_mini is not None:
         ax_mini.set_facecolor("#0A0A0A")
@@ -304,6 +337,9 @@ def render_all_frames(
     trail_rows: int = 5,
     max_frames: int = 500,
     show_minimap: bool = False,
+    marker_size: int = 120,
+    marker_shape: str = "square",
+    show_colorbar: bool = True,
 ) -> list[np.ndarray]:
     """Render all frames for video export.
 
@@ -324,6 +360,12 @@ def render_all_frames(
         warning is emitted and rendering is truncated.
     show_minimap : bool
         If True, render a minimap overview panel on the right side.
+    marker_size : int
+        Base marker size for scatter plots.
+    marker_shape : str
+        ``'circle'`` or ``'square'``.
+    show_colorbar : bool
+        If True, add a colorbar showing the intensity-to-color mapping.
     Other parameters: see ``render_frame()``.
 
     Returns
@@ -396,6 +438,9 @@ def render_all_frames(
             fig_height=fig_height,
             minimap_image=minimap_img,
             minimap_position=mini_pos,
+            marker_size=marker_size,
+            marker_shape=marker_shape,
+            show_colorbar=show_colorbar,
         )
         frames.append(frame)
 
@@ -426,6 +471,9 @@ def live_display(
     fig_width: int = 1280,
     fig_height: int = 720,
     trail_rows: int = 5,
+    marker_size: int = 120,
+    marker_shape: str = "square",
+    show_colorbar: bool = True,
 ) -> None:
     """Show a matplotlib animation synchronized with audio playback.
 
@@ -448,17 +496,28 @@ def live_display(
         Rows per second (also determines animation interval).
     trail_rows : int
         Number of rows visible simultaneously in the trail display.
+    marker_size : int
+        Base marker size for scatter plots.
+    marker_shape : str
+        ``'circle'`` or ``'square'``.
+    show_colorbar : bool
+        If True, add a colorbar showing the intensity-to-color mapping.
     Other parameters: see ``render_frame()``.
     """
     import matplotlib
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
     from collections import deque
 
     n_rows, n_channels = amplitude_matrix.shape
     interval_ms = 1000.0 / playback_speed
 
     use_heatmap = n_channels > SCATTER_CHANNEL_LIMIT
+
+    # Matplotlib marker character
+    marker_char = "s" if marker_shape == "square" else "o"
 
     dpi = 100
     fig_w_inches = fig_width / dpi
@@ -477,10 +536,6 @@ def live_display(
     # Trail history deque
     history: deque = deque(maxlen=trail_rows)
     history.append(amplitude_matrix[0])
-
-    # Initial scatter — will be cleared and redrawn each frame
-    # For simplicity in live mode, we clear and redraw using render_frame approach
-    # But for live mode we'll use a simpler update method
 
     # Title
     title_text = ax.text(
@@ -529,15 +584,14 @@ def live_display(
                 y_center = y_positions[trail_idx]
 
                 if mode == "circles":
-                    min_size = max(200 / n_channels, 10)
-                    max_size = max(3000 / n_channels, 100)
-                    sizes = (min_size + amps * (max_size - min_size)) * size_frac
+                    sizes = (marker_size + marker_size * 3 * amps) * size_frac
                 else:
-                    sizes = max(800 / n_channels, 30) * size_frac
+                    sizes = marker_size * size_frac
 
                 ax.scatter(
                     x_positions, [y_center] * n_channels,
-                    s=sizes, c=colors, edgecolors="none",
+                    s=sizes, c=colors, marker=marker_char,
+                    edgecolors="none",
                 )
 
                 if depths is not None:
@@ -551,6 +605,17 @@ def live_display(
                             ha="left", va="center",
                             transform=ax.transAxes,
                         )
+
+        # Colorbar (re-add each frame since ax is cleared)
+        if show_colorbar:
+            from matplotlib.cm import ScalarMappable
+            from matplotlib.colors import Normalize
+            norm = Normalize(vmin=0, vmax=1)
+            sm = ScalarMappable(cmap=cmap, norm=norm)
+            sm.set_array([])
+            cbar = plt.colorbar(sm, ax=ax, fraction=0.02, pad=0.01)
+            cbar.set_label("Intensity", color="white", fontsize=8)
+            cbar.ax.tick_params(colors="white", labelsize=7)
 
         # Title
         ax.text(

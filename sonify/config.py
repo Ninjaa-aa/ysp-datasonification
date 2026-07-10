@@ -65,6 +65,27 @@ class SonificationConfig:
     show_minimap: bool = False
     output_name: Optional[str] = None  # base name for output files
 
+    # ── Phase 5: display improvements ─────────────────────────────────────
+    marker_size: int = 120  # matplotlib scatter s= parameter
+    marker_shape: Literal["circle", "square"] = "square"  # Dr. Malaska requested square
+    show_colorbar: bool = True  # intensity scale colorbar
+
+    # ── Phase 5: auto-gain ────────────────────────────────────────────────
+    gain_mode: Literal[
+        "max_linear",       # global max = amplitude 1.0 (LINEAR response) [DEFAULT]
+        "max_log",          # global max = amplitude 1.0 (LOG response)
+        "pct90_linear",     # 90th percentile = amplitude 1.0, clip above (linear)
+        "pct90_log",        # 90th percentile = amplitude 1.0, clip above (log)
+        "median_linear",    # median value = amplitude 0.5 (linear)
+        "median_log",       # median value = amplitude 0.5 (log)
+        "mean_linear",      # mean value = amplitude 0.5 (linear)
+        "mean_log",         # mean value = amplitude 0.5 (log)
+    ] = "max_linear"
+
+    # ── Phase 5: sound enhancements ───────────────────────────────────────
+    sustain: float = 0.3  # amplitude sustain blend (0.0 = no sustain, 1.0 = max)
+    timbre: Literal["sine", "bell", "chime"] = "chime"  # Dr. Malaska: wind chimes
+
     def validate(self) -> None:
         """Validate all parameters, raising ValueError on bad input."""
         if not self.input_path:
@@ -178,4 +199,37 @@ class SonificationConfig:
             raise ValueError(
                 "intensity_column must be specified when "
                 "intensity_source is 'column'"
+            )
+
+        # ── Phase 5 validation ─────────────────────────────────────────
+        if self.marker_size < 10:
+            raise ValueError(
+                f"marker_size must be >= 10, got {self.marker_size}"
+            )
+
+        if self.marker_shape not in ("circle", "square"):
+            raise ValueError(
+                f"marker_shape must be 'circle' or 'square', "
+                f"got '{self.marker_shape}'"
+            )
+
+        _VALID_GAIN_MODES = (
+            "max_linear", "max_log", "pct90_linear", "pct90_log",
+            "median_linear", "median_log", "mean_linear", "mean_log",
+        )
+        if self.gain_mode not in _VALID_GAIN_MODES:
+            raise ValueError(
+                f"gain_mode must be one of {_VALID_GAIN_MODES}, "
+                f"got '{self.gain_mode}'"
+            )
+
+        if not (0.0 <= self.sustain <= 1.0):
+            raise ValueError(
+                f"sustain must be in [0.0, 1.0], got {self.sustain}"
+            )
+
+        if self.timbre not in ("sine", "bell", "chime"):
+            raise ValueError(
+                f"timbre must be 'sine', 'bell', or 'chime', "
+                f"got '{self.timbre}'"
             )

@@ -33,3 +33,11 @@ class TestCLIHelp:
         # Phase 4 args
         assert "--show-minimap" in help_text, "Missing --show-minimap"
         assert "--output-name" in help_text, "Missing --output-name"
+
+        # Phase 5 args
+        assert "--marker-size" in help_text, "Missing --marker-size"
+        assert "--marker-shape" in help_text, "Missing --marker-shape"
+        assert "--show-colorbar" in help_text, "Missing --show-colorbar"
+        assert "--gain-mode" in help_text, "Missing --gain-mode"
+        assert "--sustain" in help_text, "Missing --sustain"
+        assert "--timbre" in help_text, "Missing --timbre"

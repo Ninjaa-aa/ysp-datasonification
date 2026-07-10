@@ -182,3 +182,59 @@ class TestTrailDisplay:
         for f in frames:
             assert f.shape == (180, 320, 3)
             assert f.dtype == np.uint8
+
+
+class TestDisplayFixes:
+    """Phase 5: marker size, shape, and colorbar."""
+
+    @pytest.fixture(autouse=True)
+    def _set_agg_backend(self):
+        """Ensure Agg backend is set for all rendering tests."""
+        import matplotlib
+        matplotlib.use("Agg")
+
+    def test_square_marker_differs_from_circle(self):
+        """Frames rendered with square vs circle markers produce different pixels."""
+        from sonify.visualize import render_frame
+
+        amplitude_history = np.array([[0.3, 0.6, 0.9, 0.5]])
+
+        frame_circle = render_frame(amplitude_history, marker_shape="circle",
+                                     marker_size=120, show_colorbar=False,
+                                     fig_width=640, fig_height=360)
+        frame_square = render_frame(amplitude_history, marker_shape="square",
+                                     marker_size=120, show_colorbar=False,
+                                     fig_width=640, fig_height=360)
+
+        assert not np.array_equal(frame_circle, frame_square), \
+            "Square and circle markers should produce different frames"
+
+    def test_marker_size_affects_frame(self):
+        """Frames with different marker sizes produce different pixel arrays."""
+        from sonify.visualize import render_frame
+
+        amplitude_history = np.array([[0.3, 0.6, 0.9, 0.5]])
+
+        frame_small = render_frame(amplitude_history, marker_size=40,
+                                    show_colorbar=False,
+                                    fig_width=640, fig_height=360)
+        frame_large = render_frame(amplitude_history, marker_size=200,
+                                    show_colorbar=False,
+                                    fig_width=640, fig_height=360)
+
+        assert not np.array_equal(frame_small, frame_large), \
+            "Different marker sizes should produce different frames"
+
+    def test_colorbar_changes_frame(self):
+        """Frame with colorbar on differs from colorbar off."""
+        from sonify.visualize import render_frame
+
+        amplitude_history = np.array([[0.3, 0.6, 0.9, 0.5]])
+
+        frame_no_cbar = render_frame(amplitude_history, show_colorbar=False,
+                                      fig_width=640, fig_height=360)
+        frame_with_cbar = render_frame(amplitude_history, show_colorbar=True,
+                                        fig_width=640, fig_height=360)
+
+        assert not np.array_equal(frame_no_cbar, frame_with_cbar), \
+            "Colorbar should change the frame"
