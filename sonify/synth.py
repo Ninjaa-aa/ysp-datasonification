@@ -27,10 +27,10 @@ _BELL_WEIGHTS = np.array([1.00, 0.50, 0.25, 0.12])
 _BELL_NORM = float(_BELL_WEIGHTS.sum())  # ~1.87
 
 # Chime: inharmonic partials from tubular bell overtone spectrum
-# The non-integer ratios produce the characteristic metallic shimmer
-_CHIME_RATIOS = np.array([1.0, 2.756, 5.404, 8.933])
-_CHIME_WEIGHTS = np.array([1.00, 0.50, 0.25, 0.12])
-_CHIME_NORM = float(_CHIME_WEIGHTS.sum())  # ~1.87
+# Reduced to 2 partials only to prevent frequency crowding between pentatonic notes
+_CHIME_RATIOS = np.array([1.0, 2.756])
+_CHIME_WEIGHTS = np.array([1.00, 0.35])
+_CHIME_NORM = float(_CHIME_WEIGHTS.sum())  # 1.35
 
 # Number of partials per timbre (for phase tracking)
 _N_PARTIALS = {
@@ -52,9 +52,9 @@ _TIMBRE_PROPS = {
 
 # (attack_ms, decay_ms, sustain_level, release_ms)
 ADSR_SHAPES = {
-    "tight":   (5,  30,  0.7, 20),   # plucked, staccato
-    "natural": (15, 60,  0.6, 80),   # bell-like, default
-    "slow":    (50, 100, 0.5, 150),  # pad/ambient
+    "tight":   (5,  90,  0.0, 5),    # percussive, staccato plink
+    "natural": (15, 60,  0.3, 80),   # bell-like, default
+    "slow":    (50, 100, 0.2, 150),  # pad/ambient
 }
 
 # Timbral partition assignments: group -> (timbre, adsr_shape)

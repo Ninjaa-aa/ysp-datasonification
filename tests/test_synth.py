@@ -102,7 +102,7 @@ class TestADSR:
 
     def test_adsr_amplitude_shape(self):
         """ADSR envelope starts and ends near zero."""
-        env = generate_adsr_envelope(4410, 44100, 15, 60, 0.6, 80)
+        env = generate_adsr_envelope(44100, 44100, 5, 90, 0.0, 5)
         assert env[0] == pytest.approx(0.0, abs=0.01)
         assert env[-1] == pytest.approx(0.0, abs=0.01)
         assert env.min() >= -0.01

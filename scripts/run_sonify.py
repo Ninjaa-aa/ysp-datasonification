@@ -72,7 +72,8 @@ PRESETS = {
         "adsr_shape":         "tight",
         "gain_mode":          "max_log",
         "scale":              "log10",
-        "smoothing":          0.3,
+        "smoothing":          0.0,
+        "playback_speed":     5.0,
     },
 
     "ambient": {
@@ -360,12 +361,8 @@ def main() -> None:
 
     # ── Handle playback speed sentinel ────────────────────────────────────
     # playback_speed is None when user didn't set it on CLI.
-    # We need to resolve it before building config, but we also need n_rows
-    # for the interactive prompt.  Set a safe temporary value for config
-    # construction; the actual value will be resolved after row count is known.
+    # We will resolve it after preset application, before building config.
     playback_speed_from_cli = args.playback_speed  # None or float
-    if playback_speed_from_cli is None:
-        args.playback_speed = 10.0  # temporary safe default for validation
 
     # ── 1. Load CSV ───────────────────────────────────────────────────────
     input_path = args.input
@@ -412,6 +409,11 @@ def main() -> None:
     # ── 4. Apply preset and global defaults ───────────────────────────────
     apply_preset(args, n_detected)
     apply_global_defaults(args, n_detected)
+
+    # Resolve playback speed if still None after preset
+    needs_playback_speed_prompt = (args.playback_speed is None)
+    if args.playback_speed is None:
+        args.playback_speed = 10.0  # temporary safe default for config validation
 
     # Fill pentatonic defaults if still None
     if args.pentatonic_root is None:
@@ -486,9 +488,9 @@ def main() -> None:
     df = df.iloc[start:end].reset_index(drop=True)
 
     # ── 7b. Interactive playback speed prompt ─────────────────────────────
-    # Now that we know n_rows, resolve playback speed if the user didn't
-    # set it on CLI.  This MUST happen before synthesis but after row slicing.
-    if playback_speed_from_cli is None:
+    # Now that we know n_rows, resolve playback speed if neither CLI nor preset set it.
+    # This MUST happen before synthesis but after row slicing.
+    if needs_playback_speed_prompt:
         config.playback_speed = prompt_playback_speed(len(df), config.yes)
 
     # ── 8. Clean (NaN→0, negative→0) ─────────────────────────────────────
