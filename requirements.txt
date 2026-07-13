@@ -5,3 +5,4 @@ sounddevice
 matplotlib
 opencv-python
 moviepy>=1.0,<2.0
+pytest

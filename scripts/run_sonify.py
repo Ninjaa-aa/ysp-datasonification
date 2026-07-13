@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-CLI entry point for the borehole sonification toolkit (Phases 1–5).
+CLI entry point for the borehole sonification toolkit (Phases 1–5 + Sound Quality).
 
 This script wires together the generic ``sonify`` engine with
 dataset-specific defaults for the ice borehole fluorescence example.
@@ -10,6 +10,7 @@ Usage
 -----
     py scripts/run_sonify.py --input data/raw/...csv --yes --output outputs/test.wav
     py scripts/run_sonify.py --yes --video-output outputs/preview.mp4
+    py scripts/run_sonify.py --preset chime --yes --output outputs/chime.wav
     py scripts/run_sonify.py --help
 """
 
@@ -42,6 +43,7 @@ from sonify.mapping import (
     load_wavelength_table,
     map_tone_from_column,
     apply_intensity_column,
+    smooth_amplitude_matrix,
 )
 from sonify.synth import synthesize
 from sonify.playback import play
@@ -53,6 +55,100 @@ from sonify.export import export_wav
 def log(stage: str, message: str) -> None:
     """Print a pipeline stage message with consistent formatting."""
     print(f"[{stage:<8s}] {message}")
+
+
+# ── Preset definitions ────────────────────────────────────────────────────
+
+PRESETS = {
+    "none": {},
+
+    "chime": {
+        # Target: wind chime aesthetic, the primary Dr. Malaska goal
+        "n_bins":             8,
+        "freq_mode":          "pentatonic",
+        "pentatonic_root":    220.0,
+        "pentatonic_octaves": 3,
+        "timbre_partition":   True,
+        "adsr_shape":         "tight",
+        "gain_mode":          "max_log",
+        "scale":              "log10",
+        "smoothing":          0.3,
+    },
+
+    "ambient": {
+        # Target: slow, meditative, full dataset playback
+        "n_bins":             6,
+        "freq_mode":          "pentatonic",
+        "pentatonic_root":    110.0,
+        "pentatonic_octaves": 4,
+        "timbre":             "bell",
+        "timbre_partition":   True,
+        "adsr_shape":         "slow",
+        "gain_mode":          "median_log",
+        "scale":              "log10",
+        "smoothing":          0.7,
+    },
+
+    "scientific": {
+        # Target: data fidelity over aesthetics, all channels, no musical processing
+        "n_bins":             None,  # no rebinning, use all detected channels
+        "freq_mode":          "index",
+        "timbre":             "sine",
+        "timbre_partition":   False,
+        "adsr_shape":         "natural",
+        "gain_mode":          "max_linear",
+        "scale":              "linear",
+        "smoothing":          0.0,
+    },
+}
+
+
+# Global defaults for sentinel-valued args that are not filled by preset
+GLOBAL_DEFAULTS = {
+    "freq_mode":          "index",
+    "timbre":             "sine",
+    "timbre_partition":   True,
+    "adsr_shape":         "natural",
+    "gain_mode":          "max_linear",
+    "scale":              "log10",
+    "smoothing":          0.3,
+}
+
+
+def apply_preset(args: argparse.Namespace, n_detected_channels: int) -> None:
+    """Fill None values on args namespace from preset definition.
+
+    Called AFTER band detection (so n_detected_channels is known) and BEFORE
+    SonificationConfig is built. Only sets values where args attribute is None
+    (i.e., user did not explicitly provide that argument).
+    """
+    preset_name = args.preset or "none"
+    preset = PRESETS.get(preset_name, {})
+
+    for key, value in preset.items():
+        if getattr(args, key, None) is None:
+            if key == "n_bins" and value is None:
+                setattr(args, key, n_detected_channels)  # no rebinning
+            else:
+                setattr(args, key, value)
+
+    if preset_name != "none":
+        applied = {k: getattr(args, k) for k in preset}
+        parts = ", ".join(f"{k}={v}" for k, v in applied.items())
+        log("PRESET", f"{preset_name}: {parts}")
+
+
+def apply_global_defaults(
+    args: argparse.Namespace, n_detected_channels: int
+) -> None:
+    """Fill remaining None values with global defaults after preset application."""
+    for key, value in GLOBAL_DEFAULTS.items():
+        if getattr(args, key, None) is None:
+            setattr(args, key, value)
+
+    # n_bins: default to detected count if still None
+    if args.n_bins is None:
+        args.n_bins = n_detected_channels
 
 
 # ── Interactive playback speed prompt (Phase 5) ───────────────────────────
@@ -126,7 +222,7 @@ _DEFAULT_WAVELENGTH = os.path.join(
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Sonify a multi-channel CSV dataset (Phases 1-5).",
+        description="Sonify a multi-channel CSV dataset (Phases 1-5 + Sound Quality).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -137,14 +233,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--row-start", type=int, default=None, help="First row index to include (0-based)")
     p.add_argument("--row-end", type=int, default=None, help="Last row index (exclusive)")
+    # n_bins: default=None (sentinel for preset override detection)
     p.add_argument("--n-bins", type=int, default=None, help="Number of output frequency bins (channels); default = detected count")
     p.add_argument("--min-freq", type=float, default=150.0, help="Lowest tone frequency in Hz")
     p.add_argument("--max-freq", type=float, default=2500.0, help="Highest tone frequency in Hz")
     p.add_argument("--playback-speed", type=float, default=None,
                    help="Rows per second (if omitted, prompts interactively)")
     p.add_argument("--volume", type=float, default=0.8, help="Master gain 0.0-1.0")
-    p.add_argument("--scale", choices=["linear", "log10", "ln"], default="log10", help="Intensity scaling mode (audio)")
-    p.add_argument("--freq-mode", choices=["index", "wavelength"], default="index", help="Frequency assignment mode")
+    # scale: default=None (sentinel for preset)
+    p.add_argument("--scale", choices=["linear", "log10", "ln"], default=None, help="Intensity scaling mode (audio)")
+    # freq_mode: default=None (sentinel for preset)
+    p.add_argument("--freq-mode", choices=["index", "wavelength", "pentatonic"], default=None, help="Frequency assignment mode")
     p.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate")
     p.add_argument("--output", type=str, default=None, help="Output .wav path (omit to play through speakers)")
     p.add_argument("--yes", action="store_true", help="Skip interactive prompts (band confirmation, playback speed)")
@@ -152,6 +251,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--wavelength-path", default=_DEFAULT_WAVELENGTH,
         help="Path to band-number-to-wavelength CSV (for --freq-mode wavelength)",
     )
+
+    # ── Pentatonic arguments ─────────────────────────────────────────────
+    p.add_argument("--pentatonic-root", type=float, default=None,
+                   help="Root note in Hz for pentatonic mode (default: 220.0 = A3)")
+    p.add_argument("--pentatonic-octaves", type=int, default=None,
+                   help="Number of octaves to span in pentatonic mode (default: 3)")
 
     # ── Phase 2 visual arguments ─────────────────────────────────────────
     p.add_argument("--visual-mode", choices=["dots", "circles"], default="dots",
@@ -209,17 +314,35 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Hide intensity colorbar")
 
     # ── Phase 5 arguments: auto-gain ─────────────────────────────────────
+    # gain_mode: default=None (sentinel for preset)
     p.add_argument("--gain-mode",
                    choices=["max_linear", "max_log", "pct90_linear", "pct90_log",
                             "median_linear", "median_log", "mean_linear", "mean_log"],
-                   default="max_linear",
+                   default=None,
                    help="Global gain normalization mode")
 
     # ── Phase 5 arguments: sound ─────────────────────────────────────────
     p.add_argument("--sustain", type=float, default=0.3,
-                   help="Amplitude sustain blend 0.0-1.0 (0=no sustain, 1=max overlap)")
-    p.add_argument("--timbre", choices=["sine", "bell", "chime"], default="chime",
+                   help="(Deprecated) Amplitude sustain — ignored, ADSR handles envelope")
+    # timbre: default=None (sentinel for preset)
+    p.add_argument("--timbre", choices=["sine", "bell", "chime"], default=None,
                    help="Synthesis timbre (sine=pure, bell=harmonic partials, chime=inharmonic)")
+
+    # ── Sound quality arguments ──────────────────────────────────────────
+    p.add_argument("--preset", choices=["none", "chime", "ambient", "scientific"],
+                   default="none",
+                   help="Preset configuration (overrides individual settings not explicitly provided)")
+    # adsr_shape: default=None (sentinel for preset)
+    p.add_argument("--adsr-shape", choices=["tight", "natural", "slow"], default=None,
+                   help="ADSR envelope shape (tight=plucked, natural=bell, slow=pad)")
+    # smoothing: default=None (sentinel for preset)
+    p.add_argument("--smoothing", type=float, default=None,
+                   help="Temporal amplitude smoothing 0.0-1.0 (0=off, 0.3=light, 0.7=heavy)")
+    # timbre_partition: default=None (sentinel for preset)
+    p.add_argument("--timbre-partition", action="store_true", default=None, dest="timbre_partition",
+                   help="Enable timbral partitioning (different timbres per spectral group)")
+    p.add_argument("--no-timbre-partition", action="store_false", dest="timbre_partition",
+                   help="Disable timbral partitioning (all channels use same timbre)")
 
     return p
 
@@ -244,7 +367,59 @@ def main() -> None:
     if playback_speed_from_cli is None:
         args.playback_speed = 10.0  # temporary safe default for validation
 
-    # ── 1. Build and validate config ──────────────────────────────────────
+    # ── 1. Load CSV ───────────────────────────────────────────────────────
+    input_path = args.input
+    log("LOAD", f"Loading {input_path}")
+    df = load_csv(input_path)
+    log("LOAD", f"Loaded {len(df)} rows x {len(df.columns)} columns")
+
+    # ── 2. Load wavelength table (for display and frequency mapping) ──────
+    wl_table = None
+    try:
+        wl_table = load_wavelength_table(args.wavelength_path)
+    except Exception:
+        pass  # wavelength table is optional
+
+    # ── 3. Detect and confirm band columns ────────────────────────────────
+    band_cols, band_indices = detect_band_columns(df)
+    confirmed_cols = confirm_with_user(
+        band_cols,
+        band_indices,
+        skip_confirm=args.yes,
+        wavelength_table=wl_table,
+        all_columns=list(df.columns),
+        df=df,
+    )
+    if not confirmed_cols:
+        log("DETECT", "Aborted by user.")
+        sys.exit(1)
+
+    band_cols = confirmed_cols
+    n_detected = len(band_cols)
+    log("DETECT", f"Found {n_detected} spectral channels "
+        f"({band_cols[0]} ... {band_cols[-1]})")
+
+    # ── Density warning (before preset application) ───────────────────────
+    if (args.timbre in ("bell", "chime")
+            and args.n_bins is None
+            and not args.yes
+            and n_detected > 16):
+        n_partials = 4 if args.timbre in ("bell", "chime") else 1
+        log("WARN", f'Timbre "{args.timbre}" with {n_detected} channels = '
+            f'{n_detected * n_partials} simultaneous partials. Sounds like noise.')
+        log("WARN", "Recommended: --n-bins 8 --freq-mode pentatonic, or use --preset chime")
+
+    # ── 4. Apply preset and global defaults ───────────────────────────────
+    apply_preset(args, n_detected)
+    apply_global_defaults(args, n_detected)
+
+    # Fill pentatonic defaults if still None
+    if args.pentatonic_root is None:
+        args.pentatonic_root = 220.0
+    if args.pentatonic_octaves is None:
+        args.pentatonic_octaves = 3
+
+    # ── 5. Build and validate config ──────────────────────────────────────
     param_map = ParameterMap(
         tone_source=args.tone_source,
         tone_column=args.tone_column,
@@ -267,6 +442,8 @@ def main() -> None:
         output=args.output,
         yes=args.yes,
         wavelength_path=args.wavelength_path,
+        pentatonic_root=args.pentatonic_root,
+        pentatonic_octaves=args.pentatonic_octaves,
         # Phase 2 visual parameters
         visual_mode=args.visual_mode,
         visual_scale=args.visual_scale,
@@ -290,64 +467,38 @@ def main() -> None:
         gain_mode=args.gain_mode,
         sustain=args.sustain,
         timbre=args.timbre,
+        # Sound quality
+        adsr_shape=args.adsr_shape,
+        timbre_partition=args.timbre_partition,
+        smoothing=args.smoothing,
     )
     config.validate()
 
-    # ── 2. Load CSV ───────────────────────────────────────────────────────
-    log("LOAD", f"Loading {config.input_path}")
-    df = load_csv(config.input_path)
-    log("LOAD", f"Loaded {len(df)} rows x {len(df.columns)} columns")
-
-    # ── 3. Load wavelength table (for display and frequency mapping) ──────
-    wl_table = None
-    try:
-        wl_table = load_wavelength_table(config.wavelength_path)
-    except Exception:
-        pass  # wavelength table is optional
-
-    # ── 4. Detect and confirm band columns ────────────────────────────────
-    band_cols, band_indices = detect_band_columns(df)
-    confirmed_cols = confirm_with_user(
-        band_cols,
-        band_indices,
-        skip_confirm=config.yes,
-        wavelength_table=wl_table,
-        all_columns=list(df.columns),
-        df=df,
-    )
-    if not confirmed_cols:
-        log("DETECT", "Aborted by user.")
-        sys.exit(1)
-
-    band_cols = confirmed_cols
-    log("DETECT", f"Found {len(band_cols)} spectral channels "
-        f"({band_cols[0]} ... {band_cols[-1]})")
-
-    # ── 5. Sort by row order ──────────────────────────────────────────────
+    # ── 6. Sort by row order ──────────────────────────────────────────────
     df = sort_by_row_order(df)
     log("SORT", "Sorted by row_num ascending" if "row_num" in df.columns
         else "Sorted by depth descending" if "depth" in df.columns
         else "Original order preserved")
 
-    # ── 6. Slice rows ─────────────────────────────────────────────────────
+    # ── 7. Slice rows ─────────────────────────────────────────────────────
     start = config.row_start or 0
     end = config.row_end or len(df)
     df = df.iloc[start:end].reset_index(drop=True)
 
-    # ── 6b. Interactive playback speed prompt (Phase 5) ───────────────────
+    # ── 7b. Interactive playback speed prompt ─────────────────────────────
     # Now that we know n_rows, resolve playback speed if the user didn't
     # set it on CLI.  This MUST happen before synthesis but after row slicing.
     if playback_speed_from_cli is None:
         config.playback_speed = prompt_playback_speed(len(df), config.yes)
 
-    # ── 7. Clean (NaN→0, negative→0) ─────────────────────────────────────
+    # ── 8. Clean (NaN→0, negative→0) ─────────────────────────────────────
     matrix = clean(df, band_cols)
     n_nan = int(np.isnan(df[band_cols].to_numpy()).sum())
     n_neg = int((df[band_cols].to_numpy() < 0).sum())
     log("CLEAN", f"Clipped {n_nan} NaN values, {n_neg} negative values to 0")
     n_channels_original = matrix.shape[1]
 
-    # ── 8. Rebin if requested ─────────────────────────────────────────────
+    # ── 9. Rebin if requested ─────────────────────────────────────────────
     n_bins = config.n_bins or n_channels_original
     did_rebin = n_bins < n_channels_original
     if did_rebin:
@@ -363,7 +514,7 @@ def main() -> None:
     if want_visual:
         clean_matrix = matrix.copy()
 
-    # ── 9. Prepare wavelengths (if wavelength mode) ───────────────────────
+    # ── 10. Prepare wavelengths (if wavelength mode) ──────────────────────
     wavelengths_array = None
     if config.freq_mode == "wavelength" or config.param_map.tone_source == "wavelength":
         if wl_table is None:
@@ -376,14 +527,22 @@ def main() -> None:
             wl_per_band = rebin_wavelengths(wl_per_band, n_bins)
         wavelengths_array = wl_per_band
 
-    # ── 10. Scale values (audio) ──────────────────────────────────────────
+    # ── 11. Scale values (audio) ──────────────────────────────────────────
     matrix = scale_values(matrix, config.scale)
     log("SCALE", f"Applying {config.scale} scale")
 
-    # ── 11. Global gain normalization (Phase 5, replaces per-channel) ─────
+    # ── 12. Global gain normalization ─────────────────────────────────────
     matrix = apply_global_gain(matrix, config.gain_mode)
 
-    # ── 12. Assign frequencies ────────────────────────────────────────────
+    # ── 12b. Temporal amplitude smoothing ─────────────────────────────────
+    if config.smoothing > 0:
+        sigma = config.smoothing * 10.0
+        log("SMOOTH", f"Temporal smoothing: sigma={sigma:.1f} rows (smoothing={config.smoothing})")
+        matrix = smooth_amplitude_matrix(matrix, config.smoothing)
+    else:
+        log("SMOOTH", "Temporal smoothing: off (smoothing=0.0)")
+
+    # ── 13. Assign frequencies ────────────────────────────────────────────
     pm = config.param_map
     if pm.tone_source == "column":
         # Column-driven tone: per-row frequencies
@@ -397,6 +556,19 @@ def main() -> None:
         freqs = np.tile(row_freqs[:, np.newaxis], (1, n_channels))
         log("SYNTH", f"Tone from column '{pm.tone_column}': "
             f"{row_freqs.min():.1f}-{row_freqs.max():.1f} Hz")
+    elif config.freq_mode == "pentatonic":
+        # Pentatonic mode: musically-constrained frequencies
+        freqs = assign_frequencies(
+            n_channels, config.min_freq, config.max_freq,
+            mode="pentatonic",
+            pentatonic_root=config.pentatonic_root,
+            pentatonic_octaves=config.pentatonic_octaves,
+        )
+        log("FREQ", f"Pentatonic mode: {config.pentatonic_root:.1f} Hz root, "
+            f"{config.pentatonic_octaves} octaves -> {n_channels} notes selected")
+        log("FREQ", "min-freq / max-freq ignored in pentatonic mode")
+        log("SYNTH", f"Frequencies: {freqs[0]:.1f} Hz - {freqs[-1]:.1f} Hz "
+            f"({n_channels} channels, pentatonic)")
     else:
         # Standard per-channel frequency assignment
         freq_mode = "wavelength" if pm.tone_source == "wavelength" else config.freq_mode
@@ -407,7 +579,7 @@ def main() -> None:
         log("SYNTH", f"Frequencies: {freqs[0]:.1f} Hz - {freqs[-1]:.1f} Hz "
             f"({n_channels} channels)")
 
-    # ── 13. Apply intensity column modulation (if configured) ─────────────
+    # ── 14. Apply intensity column modulation (if configured) ─────────────
     if pm.intensity_source == "column":
         if pm.intensity_column not in df.columns:
             raise ValueError(
@@ -417,24 +589,27 @@ def main() -> None:
         matrix = apply_intensity_column(matrix, intensity_values)
         log("SYNTH", f"Intensity modulated by column '{pm.intensity_column}'")
 
-    # ── 14. Synthesize ────────────────────────────────────────────────────
+    # ── 15. Synthesize ────────────────────────────────────────────────────
     seconds_per_row = 1.0 / config.playback_speed
     duration_s = len(matrix) * seconds_per_row
+    partition_str = "partition" if config.timbre_partition else f"timbre={config.timbre}"
     log("SYNTH", f"Synthesizing {len(matrix)} rows at {config.playback_speed} "
         f"rows/sec -> {duration_s:.1f}s audio "
-        f"(timbre={config.timbre}, sustain={config.sustain})")
+        f"(adsr={config.adsr_shape}, {partition_str})")
     waveform = synthesize(
         matrix, freqs, seconds_per_row, config.sample_rate, config.volume,
-        sustain=config.sustain, timbre=config.timbre,
+        timbre=config.timbre,
+        adsr_shape=config.adsr_shape,
+        timbre_partition=config.timbre_partition,
     )
     duration = len(waveform) / config.sample_rate
 
-    # ── 15. Export / play / video ─────────────────────────────────────────
+    # ── 16. Export / play / video ─────────────────────────────────────────
     temp_wav = False
     wav_path = None
 
     if config.video_output:
-        # ── Step 15a: Export WAV to disk (needed for video muxing) ─────
+        # ── Step 16a: Export WAV to disk (needed for video muxing) ─────
         if config.output:
             wav_path = config.output
         else:
@@ -445,7 +620,7 @@ def main() -> None:
         export_wav(waveform, config.sample_rate, wav_path)
         log("EXPORT", f"Writing {wav_path}")
 
-        # ── Step 15b: Render visual frames ────────────────────────────
+        # ── Step 16b: Render visual frames ────────────────────────────
         from sonify.visualize import apply_visual_scale, render_all_frames
 
         visual_matrix = apply_visual_scale(
@@ -474,7 +649,7 @@ def main() -> None:
         render_elapsed = time.time() - render_start
         log("RENDER", f"Rendered {len(frames)} frames -- {render_elapsed:.1f}s elapsed")
 
-        # ── Step 15c: Mux audio + video ──────────────────────────────
+        # ── Step 16c: Mux audio + video ──────────────────────────────
         from sonify.video_export import export_video
 
         log("VIDEO", f"Muxing audio + video -> {config.video_output}")

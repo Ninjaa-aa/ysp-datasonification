@@ -39,8 +39,10 @@ class SonificationConfig:
     playback_speed: float = 10.0  # rows per second
     volume: float = 0.8  # master gain, 0.0–1.0
     scale: Literal["linear", "log10", "ln"] = "log10"
-    freq_mode: Literal["index", "wavelength"] = "index"
+    freq_mode: Literal["index", "wavelength", "pentatonic"] = "index"
     sample_rate: int = 44100
+    pentatonic_root: float = 220.0   # root frequency Hz; default A3
+    pentatonic_octaves: int = 3      # octaves to span
     output: Optional[str] = None  # path for .wav; None = play through speakers
     yes: bool = False  # skip interactive band-confirmation prompt
     wavelength_path: Optional[str] = None  # path to wavelength reference CSV
@@ -83,8 +85,13 @@ class SonificationConfig:
     ] = "max_linear"
 
     # ── Phase 5: sound enhancements ───────────────────────────────────────
-    sustain: float = 0.3  # amplitude sustain blend (0.0 = no sustain, 1.0 = max)
+    sustain: float = 0.3  # deprecated: kept for backward compat, ignored by ADSR
     timbre: Literal["sine", "bell", "chime"] = "chime"  # Dr. Malaska: wind chimes
+
+    # ── Sound quality update ──────────────────────────────────────────────
+    adsr_shape: Literal["tight", "natural", "slow"] = "natural"
+    timbre_partition: bool = True    # split channels into spectral groups
+    smoothing: float = 0.3           # temporal amplitude smoothing (0=off, 1=max)
 
     def validate(self) -> None:
         """Validate all parameters, raising ValueError on bad input."""
@@ -114,9 +121,20 @@ class SonificationConfig:
                 f"scale must be 'linear', 'log10', or 'ln', got '{self.scale}'"
             )
 
-        if self.freq_mode not in ("index", "wavelength"):
+        if self.freq_mode not in ("index", "wavelength", "pentatonic"):
             raise ValueError(
-                f"freq_mode must be 'index' or 'wavelength', got '{self.freq_mode}'"
+                f"freq_mode must be 'index', 'wavelength', or 'pentatonic', "
+                f"got '{self.freq_mode}'"
+            )
+
+        if self.pentatonic_root <= 0:
+            raise ValueError(
+                f"pentatonic_root must be positive, got {self.pentatonic_root}"
+            )
+
+        if not (1 <= self.pentatonic_octaves <= 8):
+            raise ValueError(
+                f"pentatonic_octaves must be in [1, 8], got {self.pentatonic_octaves}"
             )
 
         if self.sample_rate <= 0:
@@ -232,4 +250,16 @@ class SonificationConfig:
             raise ValueError(
                 f"timbre must be 'sine', 'bell', or 'chime', "
                 f"got '{self.timbre}'"
+            )
+
+        _VALID_ADSR = ("tight", "natural", "slow")
+        if self.adsr_shape not in _VALID_ADSR:
+            raise ValueError(
+                f"adsr_shape must be one of {_VALID_ADSR}, "
+                f"got '{self.adsr_shape}'"
+            )
+
+        if not (0.0 <= self.smoothing <= 1.0):
+            raise ValueError(
+                f"smoothing must be in [0.0, 1.0], got {self.smoothing}"
             )

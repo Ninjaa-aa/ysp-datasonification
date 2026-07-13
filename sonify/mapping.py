@@ -1,5 +1,6 @@
 """
-Value scaling, per-channel normalization, and frequency assignment.
+Value scaling, per-channel normalization, frequency assignment, and
+amplitude smoothing.
 
 Precondition: input matrices have already been cleaned by
 ``preprocess.clean()`` and contain no NaN or negative values.  Do **not**
@@ -14,6 +15,16 @@ import pandas as pd
 
 # Small epsilon added before log transforms to avoid log(0).
 _EPSILON = 1e-10
+
+
+# ---------------------------------------------------------------------------
+# Pentatonic scale constants
+# ---------------------------------------------------------------------------
+
+# Major pentatonic intervals: root, maj2 (9/8), maj3 (5/4), perf5 (3/2),
+# maj6 (5/3).  Any subset of these intervals is consonant by construction
+# — no dissonant minor 2nds or tritones exist in this set.
+PENTATONIC_RATIOS = (1.0, 1.125, 1.25, 1.5, 1.667)
 
 
 # ---------------------------------------------------------------------------
@@ -212,12 +223,63 @@ def apply_global_gain(
 # Frequency assignment
 # ---------------------------------------------------------------------------
 
+def assign_frequencies_pentatonic(
+    n_channels: int,
+    root_hz: float = 220.0,
+    n_octaves: int = 3,
+) -> np.ndarray:
+    """Map n_channels to notes of a major pentatonic scale.
+
+    Builds the full note list across ``n_octaves`` (5 notes per octave),
+    then selects ``n_channels`` notes distributed evenly across that list.
+    If ``n_channels > 5 * n_octaves``, auto-extends octaves to accommodate
+    (silently, no error).
+
+    Parameters
+    ----------
+    n_channels : int
+        Number of output frequencies needed.
+    root_hz : float
+        Root note in Hz (default 220.0 = A3, warm register).
+    n_octaves : int
+        Number of octaves to span (default 3 = 15 available notes).
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(n_channels,)``, dtype float64, strictly increasing,
+        all values >= ``root_hz``.
+    """
+    # Auto-extend if needed
+    while 5 * n_octaves < n_channels:
+        n_octaves += 1
+
+    # Build full note list across all octaves
+    notes = []
+    for octave in range(n_octaves):
+        octave_root = root_hz * (2 ** octave)
+        for ratio in PENTATONIC_RATIOS:
+            notes.append(octave_root * ratio)
+    notes = sorted(set(notes))  # deduplicate, sort ascending
+
+    # Select n_channels evenly distributed notes
+    if len(notes) <= n_channels:
+        indices = list(range(len(notes)))
+    else:
+        indices = [round(i * (len(notes) - 1) / (n_channels - 1))
+                   for i in range(n_channels)]
+
+    return np.array([notes[i] for i in indices], dtype=np.float64)
+
+
 def assign_frequencies(
     n_channels: int,
     min_freq: float,
     max_freq: float,
     mode: str = "index",
     wavelengths: np.ndarray | None = None,
+    pentatonic_root: float = 220.0,
+    pentatonic_octaves: int = 3,
 ) -> np.ndarray:
     """Assign a frequency (Hz) to each output channel.
 
@@ -226,14 +288,19 @@ def assign_frequencies(
     n_channels : int
         Number of output channels (post-rebinning).
     min_freq, max_freq : float
-        Frequency window in Hz.
+        Frequency window in Hz.  **Ignored** in pentatonic mode.
     mode : str
         ``'index'`` — log-spaced by channel index.
         ``'wavelength'`` — placed by actual wavelength via linear interpolation
         on wavelength, log-placement in Hz.
+        ``'pentatonic'`` — mapped to major pentatonic scale notes.
     wavelengths : np.ndarray or None
         1-D array of per-channel wavelength centers (nm).  Required (and must
         have length == ``n_channels``) when ``mode='wavelength'``.
+    pentatonic_root : float
+        Root note in Hz for pentatonic mode (default 220.0 = A3).
+    pentatonic_octaves : int
+        Number of octaves to span in pentatonic mode (default 3).
 
     Returns
     -------
@@ -241,6 +308,11 @@ def assign_frequencies(
         1-D array of length ``n_channels``, frequencies in Hz, strictly
         increasing.
     """
+    if mode == "pentatonic":
+        return assign_frequencies_pentatonic(
+            n_channels, root_hz=pentatonic_root, n_octaves=pentatonic_octaves,
+        )
+
     if n_channels == 1:
         return np.array([min_freq])
 
@@ -279,7 +351,9 @@ def assign_frequencies(
         return freqs
 
     else:
-        raise ValueError(f"Unknown freq_mode '{mode}'; expected index/wavelength")
+        raise ValueError(
+            f"Unknown freq_mode '{mode}'; expected index/wavelength/pentatonic"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -388,3 +462,43 @@ def apply_intensity_column(
     # Multiply each row by its scalar
     return amplitude_matrix * normalized[:, np.newaxis]
 
+
+
+# ---------------------------------------------------------------------------
+# Temporal amplitude smoothing (Sound Quality update)
+# ---------------------------------------------------------------------------
+
+def smooth_amplitude_matrix(
+    matrix: np.ndarray,
+    smoothing: float,
+    sample_axis: int = 0,
+) -> np.ndarray:
+    """Apply Gaussian temporal smoothing along the row axis per channel.
+
+    Smoothing is applied AFTER global gain normalization and BEFORE synthesis.
+    This suppresses row-to-row amplitude jumps while preserving gradual
+    depth-dependent structure.
+
+    Parameters
+    ----------
+    matrix : np.ndarray
+        2-D array ``(n_rows, n_channels)``, values in [0, 1].
+    smoothing : float
+        0.0 = no smoothing (identity), 1.0 = maximum (sigma=10 rows).
+        Default 0.3 = sigma=3 rows (light smoothing).
+    sample_axis : int
+        Axis to smooth along (0 = rows/time axis).
+
+    Returns
+    -------
+    np.ndarray
+        Same shape as ``matrix``, values clipped to [0, 1].
+    """
+    if smoothing <= 0.0:
+        return matrix.copy()
+    from scipy.ndimage import gaussian_filter1d
+    sigma = smoothing * 10.0
+    smoothed = gaussian_filter1d(
+        matrix.astype(np.float64), sigma=sigma, axis=sample_axis,
+    )
+    return np.clip(smoothed, 0.0, 1.0)

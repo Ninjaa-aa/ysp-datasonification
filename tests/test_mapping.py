@@ -3,7 +3,11 @@
 import numpy as np
 import pytest
 
-from sonify.mapping import scale_values, normalize_per_channel, assign_frequencies
+from sonify.mapping import (
+    scale_values, normalize_per_channel, assign_frequencies,
+    assign_frequencies_pentatonic, smooth_amplitude_matrix,
+    PENTATONIC_RATIOS,
+)
 
 
 class TestScaleValues:
@@ -290,3 +294,60 @@ class TestAutoGain:
         ch0_max = result[:, 0].max()
         assert ch0_max == pytest.approx(1.0, abs=0.01), \
             f"Strong channel should reach 1.0 (max={ch0_max:.3f})"
+
+
+class TestPentatonicFrequencies:
+    """Sound quality update: pentatonic frequency mapping."""
+
+    def test_pentatonic_count(self):
+        """Output array length matches requested n_channels."""
+        for n in [4, 6, 8, 16]:
+            freqs = assign_frequencies_pentatonic(n, 220.0, 4)
+            assert len(freqs) == n
+
+    def test_pentatonic_strictly_increasing(self):
+        """Pentatonic frequencies are strictly increasing."""
+        freqs = assign_frequencies_pentatonic(8, 220.0, 3)
+        assert all(freqs[i] < freqs[i + 1] for i in range(len(freqs) - 1))
+
+    def test_pentatonic_root_is_first(self):
+        """First frequency is the root note."""
+        freqs = assign_frequencies_pentatonic(8, 220.0, 3)
+        assert freqs[0] == pytest.approx(220.0, rel=0.01)
+
+    def test_pentatonic_only_valid_intervals(self):
+        """Every frequency is root * 2^k * ratio for some k and ratio."""
+        freqs = assign_frequencies_pentatonic(8, 220.0, 3)
+        for f in freqs:
+            found = any(
+                abs(f - 220.0 * (2 ** k) * r) < 0.01
+                for k in range(5)
+                for r in PENTATONIC_RATIOS
+            )
+            assert found, f"Frequency {f:.2f} Hz not on pentatonic scale"
+
+    def test_pentatonic_auto_extends_octaves(self):
+        """Auto-extends octaves when n_channels > 5 * n_octaves."""
+        freqs = assign_frequencies_pentatonic(20, 220.0, 3)  # 3 octaves = 15 notes
+        assert len(freqs) == 20
+        assert all(np.isfinite(freqs))
+
+
+class TestSmoothAmplitudeMatrix:
+    """Sound quality update: temporal amplitude smoothing."""
+
+    def test_smooth_zero_is_identity(self):
+        """smoothing=0.0 returns unchanged matrix."""
+        np.random.seed(42)
+        m = np.random.rand(50, 8)
+        result = smooth_amplitude_matrix(m, smoothing=0.0)
+        np.testing.assert_array_equal(result, m)
+
+    def test_smooth_reduces_variance(self):
+        """Smoothing reduces temporal variance of the amplitude matrix."""
+        np.random.seed(42)
+        m = np.random.rand(200, 8)
+        smoothed = smooth_amplitude_matrix(m, smoothing=0.5)
+        assert smoothed.var() < m.var()
+        assert 0.0 <= smoothed.min()
+        assert smoothed.max() <= 1.0

@@ -1,12 +1,12 @@
 """
-Additive synthesis engine with phase-continuous oscillators and
-anti-click boundary fading.
+Additive synthesis engine with phase-continuous oscillators, ADSR
+envelopes, and timbral partitioning.
 
-Phase 5 additions:
-- Sustain: blend previous row's amplitude into current row for smoother
-  transitions
-- Timbre: sine (pure), bell (4 harmonic partials), chime (4 inharmonic
-  partials for metallic shimmer)
+Sound Quality update:
+- ADSR envelope replaces the old fade-in/fade-out + sustain ramp
+- Timbral partitioning: split channels into spectral groups with different
+  timbres and ADSR shapes (bell/chime/sine)
+- Sustain parameter kept for backward compat but deprecated
 
 Produces a mono float64 waveform in [-1, 1] ready for playback or
 WAV export.
@@ -39,6 +39,104 @@ _N_PARTIALS = {
     "chime": len(_CHIME_RATIOS),
 }
 
+# Timbre properties lookup: (ratios, weights, norm, n_partials)
+_TIMBRE_PROPS = {
+    "bell":  (_BELL_RATIOS, _BELL_WEIGHTS, _BELL_NORM, len(_BELL_RATIOS)),
+    "chime": (_CHIME_RATIOS, _CHIME_WEIGHTS, _CHIME_NORM, len(_CHIME_RATIOS)),
+}
+
+
+# ---------------------------------------------------------------------------
+# ADSR envelope shapes
+# ---------------------------------------------------------------------------
+
+# (attack_ms, decay_ms, sustain_level, release_ms)
+ADSR_SHAPES = {
+    "tight":   (5,  30,  0.7, 20),   # plucked, staccato
+    "natural": (15, 60,  0.6, 80),   # bell-like, default
+    "slow":    (50, 100, 0.5, 150),  # pad/ambient
+}
+
+# Timbral partition assignments: group -> (timbre, adsr_shape)
+_PARTITION_GROUPS = {
+    0: ("bell",  "natural"),  # deep UV / low bands
+    1: ("chime", "tight"),    # mid UV / middle bands
+    2: ("sine",  "slow"),     # near UV / high bands
+}
+
+
+def generate_adsr_envelope(
+    segment_samples: int,
+    sample_rate: int,
+    attack_ms: float,
+    decay_ms: float,
+    sustain_level: float,
+    release_ms: float,
+) -> np.ndarray:
+    """Generate a normalized ADSR amplitude envelope for one row segment.
+
+    The four phases:
+      Attack:  ramp from 0 → 1.0 over attack_ms milliseconds
+      Decay:   ramp from 1.0 → sustain_level over decay_ms milliseconds
+      Sustain: hold at sustain_level for the remaining middle of the segment
+      Release: ramp from sustain_level → 0 over release_ms milliseconds
+
+    Each phase is capped so no single phase can consume more than 20% of
+    the segment, even at very high playback speeds.
+
+    Parameters
+    ----------
+    segment_samples : int
+        Total samples in this row segment.
+    sample_rate : int
+        Samples per second (e.g. 44100).
+    attack_ms : float
+        Attack time in milliseconds.
+    decay_ms : float
+        Decay time in milliseconds.
+    sustain_level : float
+        Amplitude level during sustain (0.0–1.0).
+    release_ms : float
+        Release time in milliseconds.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(segment_samples,)``, values in [0.0, 1.0].
+    """
+    if segment_samples <= 0:
+        return np.array([], dtype=np.float64)
+
+    cap = max(1, segment_samples // 5)
+
+    a = min(int(attack_ms  * sample_rate / 1000), cap)
+    d = min(int(decay_ms   * sample_rate / 1000), cap)
+    r = min(int(release_ms * sample_rate / 1000), cap)
+    s = max(0, segment_samples - a - d - r)
+
+    parts = []
+    if a > 0:
+        parts.append(np.linspace(0.0, 1.0, a))
+    if d > 0:
+        parts.append(np.linspace(1.0, sustain_level, d))
+    if s > 0:
+        parts.append(np.full(s, sustain_level))
+    if r > 0:
+        parts.append(np.linspace(sustain_level, 0.0, r))
+
+    if not parts:
+        return np.zeros(segment_samples, dtype=np.float64)
+
+    envelope = np.concatenate(parts)
+
+    # Guard: length must match segment_samples exactly (rounding can cause off-by-one)
+    if len(envelope) < segment_samples:
+        pad_val = envelope[-1] if len(envelope) > 0 else 0.0
+        envelope = np.append(
+            envelope, np.full(segment_samples - len(envelope), pad_val)
+        )
+    return envelope[:segment_samples]
+
 
 def synthesize(
     amplitude_matrix: np.ndarray,
@@ -46,15 +144,17 @@ def synthesize(
     seconds_per_row: float,
     sample_rate: int,
     volume: float = 0.8,
-    sustain: float = 0.0,
+    sustain: float = 0.0,  # deprecated: ignored when adsr_shape is set
     timbre: str = "sine",
+    adsr_shape: str = "natural",
+    timbre_partition: bool = True,
 ) -> np.ndarray:
-    """Phase-continuous additive synthesis.
+    """Phase-continuous additive synthesis with ADSR envelopes.
 
     Each row in ``amplitude_matrix`` becomes one fixed-length audio segment.
     Segments are concatenated in row order.  Per-channel phase is carried
-    across segment boundaries to avoid clicks.  A short raised-cosine
-    fade-in/out is applied at each boundary as a second safety net.
+    across segment boundaries to avoid clicks.  A proper ADSR envelope
+    shapes the amplitude of each note.
 
     Parameters
     ----------
@@ -71,13 +171,24 @@ def synthesize(
     volume : float
         Master gain in ``[0, 1]``, applied before peak normalization.
     sustain : float
-        Amplitude sustain blend factor in ``[0, 1]``.  0.0 = no sustain
-        (Phase 1 behavior).  Higher values blend the previous row's
-        amplitude into the start of the current row.
+        Deprecated. Kept for backward compatibility. Ignored — ADSR
+        envelope handles all amplitude shaping.
     timbre : str
-        ``'sine'`` (pure sine, Phase 1 behavior), ``'bell'`` (4 harmonic
-        partials), or ``'chime'`` (4 inharmonic partials for metallic
-        shimmer).
+        ``'sine'`` (pure sine), ``'bell'`` (4 harmonic partials), or
+        ``'chime'`` (4 inharmonic partials).  **Ignored when
+        ``timbre_partition=True``** — each spectral group uses its own
+        timbre in that case.
+    adsr_shape : str
+        ``'tight'``, ``'natural'``, or ``'slow'``.  Controls the ADSR
+        envelope shape.  **Overridden per-group when
+        ``timbre_partition=True``.**
+    timbre_partition : bool
+        If True (default), split channels into 3 spectral groups with
+        different timbres and ADSR shapes:
+        - Group 0 (low bands): bell + natural ADSR
+        - Group 1 (mid bands): chime + tight ADSR
+        - Group 2 (high bands): sine + slow ADSR
+        If False, all channels use the global ``timbre`` and ``adsr_shape``.
 
     Returns
     -------
@@ -100,43 +211,30 @@ def synthesize(
     # Determine if freqs are per-row or fixed
     per_row_freqs = freqs.ndim == 2
 
-    # Pre-compute fade envelope (raised-cosine), capped so at least half
-    # the segment stays at full amplitude.
-    default_fade = round(0.010 * sample_rate)  # 10 ms
-    fade_samples = min(default_fade, segment_samples // 4)
-
-    envelope = np.ones(segment_samples, dtype=np.float64)
-    if fade_samples > 0:
-        # Raised-cosine fade-in: 0 → 1
-        fade_in = 0.5 * (1.0 - np.cos(np.pi * np.arange(fade_samples) / fade_samples))
-        # Raised-cosine fade-out: 1 → 0
-        fade_out = 0.5 * (1.0 + np.cos(np.pi * np.arange(fade_samples) / fade_samples))
-        envelope[:fade_samples] = fade_in
-        envelope[-fade_samples:] = fade_out
-
     # Time vector for one segment
     t = np.arange(segment_samples, dtype=np.float64) / sample_rate
 
-    # Determine partial count and properties based on timbre
-    if timbre == "bell":
-        partial_ratios = _BELL_RATIOS
-        partial_weights = _BELL_WEIGHTS
-        partial_norm = _BELL_NORM
-        n_partials = len(partial_ratios)
-    elif timbre == "chime":
-        partial_ratios = _CHIME_RATIOS
-        partial_weights = _CHIME_WEIGHTS
-        partial_norm = _CHIME_NORM
-        n_partials = len(partial_ratios)
-    else:
-        # sine mode — single partial
-        n_partials = 1
+    # ── Build per-channel assignments ──────────────────────────────────
+    # Each channel gets: timbre_name, adsr_params, n_partials, partial_ratios,
+    # partial_weights, partial_norm
+    ch_timbre = [timbre] * n_channels
+    ch_adsr = [ADSR_SHAPES[adsr_shape]] * n_channels
+
+    if timbre_partition and n_channels >= 3:
+        # Split into 3 groups by index
+        groups = np.array_split(range(n_channels), 3)
+        for group_idx, channel_indices in enumerate(groups):
+            grp_timbre, grp_adsr_name = _PARTITION_GROUPS[group_idx]
+            grp_adsr = ADSR_SHAPES[grp_adsr_name]
+            for ch in channel_indices:
+                ch_timbre[ch] = grp_timbre
+                ch_adsr[ch] = grp_adsr
+
+    # Determine max partials across all channels for phase tracking
+    max_partials = max(_N_PARTIALS.get(t, 1) for t in ch_timbre)
 
     # Running phase per channel per partial (carries across segments)
-    phases = np.zeros((n_channels, n_partials), dtype=np.float64)
-
-    # Previous row amplitudes for sustain blending
-    prev_amps = np.zeros(n_channels, dtype=np.float64)
+    phases = np.zeros((n_channels, max_partials), dtype=np.float64)
 
     # Pre-allocate the full waveform
     total_samples = n_rows * segment_samples
@@ -151,22 +249,20 @@ def synthesize(
         row_freqs = freqs[row_idx] if per_row_freqs else freqs
 
         for ch in range(n_channels):
-            new_amp = amplitude_matrix[row_idx, ch]
+            amp = amplitude_matrix[row_idx, ch]
             freq = row_freqs[ch]
+            t_name = ch_timbre[ch]
+            adsr_params = ch_adsr[ch]
 
-            # ── Sustain: blend previous amplitude into start ──────────
-            if sustain > 0 and row_idx > 0:
-                effective_start = (1 - sustain) * new_amp + sustain * prev_amps[ch]
-                # Linear ramp from effective_start to new_amp across segment
-                amp_envelope = np.linspace(effective_start, new_amp, segment_samples)
-            else:
-                amp_envelope = new_amp  # scalar, broadcast works fine
+            # Generate ADSR envelope for this segment
+            envelope = generate_adsr_envelope(
+                segment_samples, sample_rate, *adsr_params
+            )
 
-            if timbre == "sine":
-                # ── Sine mode: single partial (Phase 1 behavior) ──────
+            if t_name == "sine":
+                # ── Sine mode: single partial ─────────────────────────
                 angles = two_pi * freq * t + phases[ch, 0]
-                osc = amp_envelope * np.sin(angles)
-                osc *= envelope
+                osc = amp * envelope * np.sin(angles)
                 segment += osc
 
                 # Update running phase
@@ -174,27 +270,28 @@ def synthesize(
                 phases[ch, 0] %= two_pi
             else:
                 # ── Bell / Chime: multiple partials ───────────────────
+                partial_ratios, partial_weights, partial_norm, n_partials = (
+                    _TIMBRE_PROPS[t_name]
+                )
+                ch_signal = np.zeros(segment_samples, dtype=np.float64)
+
                 for p in range(n_partials):
                     partial_freq = freq * partial_ratios[p]
                     partial_weight = partial_weights[p]
 
                     angles = two_pi * partial_freq * t + phases[ch, p]
-                    osc = amp_envelope * partial_weight * np.sin(angles)
-                    osc *= envelope
-                    segment += osc
+                    osc = partial_weight * np.sin(angles)
+                    ch_signal += osc
 
                     # Update running phase for this partial
-                    phases[ch, p] += two_pi * partial_freq * segment_samples / sample_rate
+                    phases[ch, p] += (
+                        two_pi * partial_freq * segment_samples / sample_rate
+                    )
                     phases[ch, p] %= two_pi
 
-                # Normalize by sum of weights to keep amplitude in range
-                # (applied per-channel to avoid cumulative overcount)
-
-            prev_amps[ch] = new_amp
-
-        # Normalize bell/chime segment by partial weight sum
-        if timbre in ("bell", "chime"):
-            segment /= partial_norm
+                # Normalize by sum of weights, apply amplitude and envelope
+                ch_signal = amp * envelope * ch_signal / partial_norm
+                segment += ch_signal
 
         # Write segment into the full waveform
         start = row_idx * segment_samples

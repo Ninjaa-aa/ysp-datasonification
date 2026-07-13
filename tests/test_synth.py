@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from scipy.io import wavfile
 
-from sonify.synth import synthesize
+from sonify.synth import synthesize, generate_adsr_envelope, ADSR_SHAPES
 from sonify.export import export_wav
 
 
@@ -21,7 +21,8 @@ class TestSynthesize:
         spr = 0.1  # 10 rows/sec
         sr = 44100
 
-        waveform = synthesize(amp, freqs, spr, sr, timbre="sine", sustain=0.0)
+        waveform = synthesize(amp, freqs, spr, sr, timbre="sine", sustain=0.0,
+                              timbre_partition=False, adsr_shape="natural")
         expected_length = n_rows * round(spr * sr)
         assert abs(len(waveform) - expected_length) <= 1
 
@@ -30,87 +31,82 @@ class TestSynthesize:
         amp = np.random.rand(n_rows, n_channels)
         freqs = np.linspace(200, 2000, n_channels)
 
-        waveform = synthesize(amp, freqs, 0.05, 22050, timbre="sine", sustain=0.0)
+        waveform = synthesize(amp, freqs, 0.05, 22050, timbre="sine", sustain=0.0,
+                              timbre_partition=False, adsr_shape="natural")
         assert np.max(np.abs(waveform)) <= 1.0 + 1e-10
 
     def test_silence_produces_silence(self):
         amp = np.zeros((10, 3))
         freqs = np.array([200, 500, 1000], dtype=float)
-        waveform = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0)
+        waveform = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0,
+                              timbre_partition=False, adsr_shape="natural")
         # All-zero amplitude → all-zero waveform (peak-normalize guards div-by-0)
         np.testing.assert_array_equal(waveform, 0.0)
 
     def test_fade_cap_at_high_speed(self):
-        """At very high playback speed, fade should be capped to segment_samples // 4."""
+        """At very high playback speed, ADSR phases should be capped."""
         n_rows, n_channels = 10, 2
         amp = np.ones((n_rows, n_channels))
         freqs = np.array([300, 800], dtype=float)
         sr = 44100
         # 200 rows/sec → segment = ~220 samples
         spr = 1.0 / 200.0
-        segment_samples = round(spr * sr)
-
-        # The fade should be min(441, segment_samples // 4)
-        default_fade = round(0.010 * sr)  # 441
-        expected_fade = min(default_fade, segment_samples // 4)
-        assert expected_fade < default_fade  # confirm the cap kicks in
 
         # Just verify it runs without error and produces valid output
-        waveform = synthesize(amp, freqs, spr, sr, timbre="sine", sustain=0.0)
+        waveform = synthesize(amp, freqs, spr, sr, timbre="sine", sustain=0.0,
+                              timbre_partition=False, adsr_shape="natural")
         assert np.isfinite(waveform).all()
         assert np.max(np.abs(waveform)) <= 1.0 + 1e-10
 
 
-class TestSustain:
-    """Phase 5: sustain amplitude blending."""
+class TestADSR:
+    """Sound quality update: ADSR envelope tests (replaces Phase 5 sustain tests)."""
 
-    def test_sustain_zero_matches_no_sustain(self):
-        """With sustain=0.0, output is identical to current behavior."""
-        n_rows, n_channels = 20, 4
-        np.random.seed(42)
-        amp = np.random.rand(n_rows, n_channels)
-        freqs = np.linspace(200, 2000, n_channels)
+    def test_adsr_envelope_length(self):
+        """Envelope length matches requested segment_samples exactly."""
+        env = generate_adsr_envelope(4410, 44100, 15, 60, 0.6, 80)
+        assert len(env) == 4410
 
-        wave_no_sustain = synthesize(amp, freqs, 0.1, 44100,
-                                     timbre="sine", sustain=0.0)
-        wave_sustain_zero = synthesize(amp, freqs, 0.1, 44100,
-                                       timbre="sine", sustain=0.0)
+    def test_adsr_envelope_starts_at_zero(self):
+        """ADSR envelope starts at zero (attack phase begins from silence)."""
+        env = generate_adsr_envelope(4410, 44100, 15, 60, 0.6, 80)
+        assert env[0] == pytest.approx(0.0, abs=0.01)
 
-        np.testing.assert_array_equal(wave_no_sustain, wave_sustain_zero)
+    def test_adsr_envelope_ends_at_zero(self):
+        """ADSR envelope ends at zero (release phase returns to silence)."""
+        env = generate_adsr_envelope(4410, 44100, 15, 60, 0.6, 80)
+        assert env[-1] == pytest.approx(0.0, abs=0.01)
 
-    def test_sustain_smooths_amplitude_transitions(self):
-        """Sustain 0.5 produces smaller amplitude jumps at row boundaries."""
-        n_channels = 2
-        freqs = np.array([300, 800], dtype=float)
-        sr = 44100
-        spr = 0.1  # 10 rows/sec
+    def test_adsr_envelope_within_range(self):
+        """All ADSR envelope values in [0, 1]."""
+        env = generate_adsr_envelope(4410, 44100, 15, 60, 0.6, 80)
+        assert env.min() >= -0.01
+        assert env.max() <= 1.01
 
-        # Two rows with very different amplitudes
-        amp = np.array([
-            [1.0, 1.0],  # loud
-            [0.0, 0.0],  # silent
-        ])
+    def test_adsr_short_segment_no_crash(self):
+        """At 40 rows/sec, segment_samples = ~1102; each phase capped at 220."""
+        env = generate_adsr_envelope(1102, 44100, 15, 60, 0.6, 80)
+        assert len(env) == 1102
+        assert env.min() >= -0.01
+        assert env.max() <= 1.01
 
-        wave_no_sustain = synthesize(amp, freqs, spr, sr,
-                                     timbre="sine", sustain=0.0)
-        wave_with_sustain = synthesize(amp, freqs, spr, sr,
-                                       timbre="sine", sustain=0.5)
+    def test_adsr_tight_differs_from_slow(self):
+        """Tight and slow ADSR shapes produce audibly different waveforms."""
+        freqs = np.array([220., 275., 330., 415.])
+        amps = np.ones((20, 4)) * 0.5
+        w_tight = synthesize(amps, freqs, 0.1, 44100, timbre="sine",
+                             timbre_partition=False, adsr_shape="tight")
+        w_slow = synthesize(amps, freqs, 0.1, 44100, timbre="sine",
+                            timbre_partition=False, adsr_shape="slow")
+        assert not np.allclose(w_tight, w_slow)
 
-        # With sustain, the transition from row 0 → row 1 should be smoother
-        # The second segment of the sustained version should have some energy
-        # (because of the blend from the loud row)
-        segment_samples = round(spr * sr)
-        seg2_no_sustain = wave_no_sustain[segment_samples:]
-        seg2_with_sustain = wave_with_sustain[segment_samples:]
-
-        # The sustained version should have more energy in segment 2
-        rms_no_sustain = np.sqrt(np.mean(seg2_no_sustain ** 2))
-        rms_with_sustain = np.sqrt(np.mean(seg2_with_sustain ** 2))
-
-        # With sustain, the blended start means more energy early in segment 2
-        assert rms_with_sustain > rms_no_sustain + 1e-10, \
-            f"Expected sustain to add energy: no_sustain={rms_no_sustain:.6f}, " \
-            f"with_sustain={rms_with_sustain:.6f}"
+    def test_adsr_amplitude_shape(self):
+        """ADSR envelope starts and ends near zero."""
+        env = generate_adsr_envelope(4410, 44100, 15, 60, 0.6, 80)
+        assert env[0] == pytest.approx(0.0, abs=0.01)
+        assert env[-1] == pytest.approx(0.0, abs=0.01)
+        assert env.min() >= -0.01
+        assert env.max() <= 1.01
 
 
 class TestTimbre:
@@ -123,8 +119,10 @@ class TestTimbre:
         amp = np.random.rand(n_rows, n_channels)
         freqs = np.linspace(300, 1500, n_channels)
 
-        wave1 = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0)
-        wave2 = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0)
+        wave1 = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0,
+                           timbre_partition=False, adsr_shape="natural")
+        wave2 = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0,
+                           timbre_partition=False, adsr_shape="natural")
 
         np.testing.assert_array_equal(wave1, wave2)
 
@@ -135,8 +133,10 @@ class TestTimbre:
         amp = np.random.rand(n_rows, n_channels)
         freqs = np.linspace(300, 1500, n_channels)
 
-        wave_sine = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0)
-        wave_bell = synthesize(amp, freqs, 0.1, 44100, timbre="bell", sustain=0.0)
+        wave_sine = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0,
+                               timbre_partition=False, adsr_shape="natural")
+        wave_bell = synthesize(amp, freqs, 0.1, 44100, timbre="bell", sustain=0.0,
+                               timbre_partition=False, adsr_shape="natural")
 
         assert not np.array_equal(wave_sine, wave_bell), \
             "Bell and sine should produce different waveforms"
@@ -148,8 +148,10 @@ class TestTimbre:
         amp = np.random.rand(n_rows, n_channels)
         freqs = np.linspace(300, 1500, n_channels)
 
-        wave_bell = synthesize(amp, freqs, 0.1, 44100, timbre="bell", sustain=0.0)
-        wave_chime = synthesize(amp, freqs, 0.1, 44100, timbre="chime", sustain=0.0)
+        wave_bell = synthesize(amp, freqs, 0.1, 44100, timbre="bell", sustain=0.0,
+                               timbre_partition=False, adsr_shape="natural")
+        wave_chime = synthesize(amp, freqs, 0.1, 44100, timbre="chime", sustain=0.0,
+                                timbre_partition=False, adsr_shape="natural")
 
         assert not np.array_equal(wave_bell, wave_chime), \
             "Chime and bell should produce different waveforms (inharmonic vs harmonic)"
@@ -162,11 +164,35 @@ class TestTimbre:
         freqs = np.linspace(200, 2000, n_channels)
 
         for t in ("bell", "chime"):
-            waveform = synthesize(amp, freqs, 0.1, 44100, timbre=t, sustain=0.0)
+            waveform = synthesize(amp, freqs, 0.1, 44100, timbre=t, sustain=0.0,
+                                  timbre_partition=False, adsr_shape="natural")
             assert np.max(np.abs(waveform)) <= 1.0 + 1e-10, \
                 f"timbre='{t}' exceeded [-1, 1] range"
             assert np.isfinite(waveform).all(), \
                 f"timbre='{t}' produced non-finite values"
+
+
+class TestTimbrePartition:
+    """Sound quality update: timbral partitioning tests."""
+
+    def test_timbre_partition_differs_from_uniform(self):
+        """With partition enabled, output should differ from uniform timbre."""
+        freqs = np.array([220., 247.5, 277.2, 311., 330., 370., 415., 440.])
+        amps = np.ones((10, 8)) * 0.5
+        w_partition = synthesize(amps, freqs, 0.1, 44100, timbre="chime",
+                                 timbre_partition=True, adsr_shape="natural")
+        w_uniform = synthesize(amps, freqs, 0.1, 44100, timbre="chime",
+                               timbre_partition=False, adsr_shape="natural")
+        assert not np.allclose(w_partition, w_uniform)
+
+    def test_synthesize_output_in_range(self):
+        """Partitioned synthesis output stays in [-1, 1]."""
+        np.random.seed(42)
+        freqs = np.array([220., 330., 440., 550.])
+        amps = np.random.rand(10, 4)
+        w = synthesize(amps, freqs, 0.1, 44100, timbre="chime",
+                       timbre_partition=True, adsr_shape="natural")
+        assert w.min() >= -1.01 and w.max() <= 1.01
 
 
 class TestExportWav:
