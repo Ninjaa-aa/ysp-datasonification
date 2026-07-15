@@ -54,9 +54,9 @@ class TestRebin:
         # Row 1: [8, 9, 10, 11, 12, 13, 14, 15]
         result = rebin(matrix, 4)
         assert result.shape == (2, 4)
-        # Group 0: mean(0,1)=0.5, Group 1: mean(2,3)=2.5, etc.
-        np.testing.assert_array_almost_equal(result[0], [0.5, 2.5, 4.5, 6.5])
-        np.testing.assert_array_almost_equal(result[1], [8.5, 10.5, 12.5, 14.5])
+        # Group 0: max(0,1)=1.0, Group 1: max(2,3)=3.0, etc.
+        np.testing.assert_array_almost_equal(result[0], [1.0, 3.0, 5.0, 7.0])
+        np.testing.assert_array_almost_equal(result[1], [9.0, 11.0, 13.0, 15.0])
 
     def test_no_rebin_when_n_bins_ge_channels(self):
         matrix = np.ones((3, 4))

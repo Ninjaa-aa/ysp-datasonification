@@ -241,7 +241,7 @@ class TestAutoGain:
 
     def test_gain_log_modes_compress_range(self):
         """Log mode output has smaller std than linear mode (confirms compression)."""
-        from sonify.mapping import apply_global_gain
+        from sonify.mapping import apply_global_gain, scale_values
 
         # Data with extremely large dynamic range — log should compress this
         # significantly more than linear
@@ -253,7 +253,10 @@ class TestAutoGain:
         ])
 
         result_linear = apply_global_gain(matrix, "max_linear")
-        result_log = apply_global_gain(matrix, "max_log")
+        
+        # In the real pipeline, scale_values is called before apply_global_gain
+        matrix_scaled = scale_values(matrix, "log10")
+        result_log = apply_global_gain(matrix_scaled, "max_log")
 
         # In linear mode, 10000 maps to 1.0, so 1.0 maps to ~0.0001
         # Most values cluster near 0 → high std from the outlier

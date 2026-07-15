@@ -118,11 +118,20 @@ def generate_adsr_envelope(
     if a > 0:
         parts.append(np.linspace(0.0, 1.0, a))
     if d > 0:
-        parts.append(np.linspace(1.0, sustain_level, d))
+        t_decay = np.linspace(0, 1, d)
+        tau = 0.3
+        decay = sustain_level + (1.0 - sustain_level) * np.exp(-t_decay / tau)
+        decay = (decay - decay[-1]) / (decay[0] - decay[-1] + 1e-10)
+        decay = sustain_level + decay * (1.0 - sustain_level)
+        parts.append(decay)
     if s > 0:
         parts.append(np.full(s, sustain_level))
     if r > 0:
-        parts.append(np.linspace(sustain_level, 0.0, r))
+        t_release = np.linspace(0, 1, r)
+        release = sustain_level * np.exp(-t_release / 0.3)
+        release = (release - release[-1]) / (release[0] - release[-1] + 1e-10)
+        release = release * sustain_level
+        parts.append(release)
 
     if not parts:
         return np.zeros(segment_samples, dtype=np.float64)

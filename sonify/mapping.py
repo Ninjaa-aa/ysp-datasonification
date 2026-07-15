@@ -196,14 +196,12 @@ def apply_global_gain(
     is_log = gain_mode.endswith("_log")
 
     if is_log:
-        # Apply log10 transform first, then compute reference on log values
-        work = np.log10(np.maximum(matrix, 0) + epsilon)
+        work = matrix.copy()
     else:
         work = matrix.copy()
 
-    # Shift so minimum is 0 (log values can be negative)
-    work_min = work.min()
-    work = work - work_min
+    # Clip to zero so true zeros stay silent, instead of shifting up
+    work = np.clip(work, 0.0, None)
 
     reference, target_amp = compute_gain_reference(work, gain_mode)
 

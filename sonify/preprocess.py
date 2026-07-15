@@ -100,7 +100,7 @@ def rebin(matrix: np.ndarray, n_bins: int) -> np.ndarray:
 
     groups = _contiguous_groups(n_channels, n_bins)
     rebinned = np.column_stack(
-        [matrix[:, g].mean(axis=1) for g in groups]
+        [matrix[:, g].max(axis=1) for g in groups]
     )
     return rebinned
 
