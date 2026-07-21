@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 outputs/*.wav
 .venv/
+
+# Presentation and dependencies
+node_modules/
+outputs/*.jpg
+outputs/*.pdf
+outputs/*.pptx

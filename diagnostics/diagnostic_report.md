@@ -6,7 +6,7 @@
 - **Dynamic Range**: The values are highly skewed. The global mean is ~20.7, but the maximum value is 4921.4. The 75th percentile is only 56.7, while the 99th percentile jumps to 405.8. The data consists mostly of silence punctuated by huge spikes.
 - **Verdict**: The data itself is highly sparse, mostly consisting of zero or near-zero values with occasional large spikes.
 
-![Data Quality](/home/hammad/.gemini/antigravity-ide/brain/2586337b-9b03-438a-8488-854111771798/investigation_1_data_quality.png)
+![Data Quality](outputs/investigation_1_data_quality.png)
 
 ## 2. PIPELINE VALUES
 - **Reasonable Values**: The amplitude matrix entering synthesis does **not** have reasonable values. Due to a critical bug, true zeros (silence) are being forced to ~94-95% maximum amplitude.
@@ -14,8 +14,8 @@
 - **NaN/Inf**: No NaN or Inf values were found. 
 - **Verdict**: The pipeline is producing degenerate amplitude values. The gain normalization (`max_log` mode) applies a double-log transform (since the values were already logged) and incorrectly handles the log min-shift. It takes a raw value of 0 (which becomes `-10` in log space) and shifts/scales it to map to `~0.95` amplitude. This completely destroys the dynamic range and forces silence to be almost as loud as the absolute maximum peaks.
 
-![Pipeline Stages](/home/hammad/.gemini/antigravity-ide/brain/2586337b-9b03-438a-8488-854111771798/investigation_2_pipeline_stages.png)
-![Per-Channel Amplitude](/home/hammad/.gemini/antigravity-ide/brain/2586337b-9b03-438a-8488-854111771798/investigation_2_per_channel_amplitude.png)
+![Pipeline Stages](outputs/investigation_2_pipeline_stages.png)
+![Per-Channel Amplitude](outputs/investigation_2_per_channel_amplitude.png)
 
 ## 3. SYNTHESIS OUTPUT
 - **Peak and RMS**: The output WAV has a peak of `0.999969` (-0.0 dBFS) and an RMS of `0.133404` (-17.5 dBFS).
@@ -24,15 +24,15 @@
 - **ADSR Envelope**: Every single row triggers a loud percussive burst (because all amplitudes are near 1.0). The tight ADSR envelope causes each 200ms segment to have a massive attack and immediate decay. 
 - **Verdict**: The synthesizer is acting correctly based on its inputs, but because it is being fed near-maximum amplitude for every single row, it produces a constant stream of massive percussive hits, creating the relentless "tak tak tak" sound.
 
-![Row Envelopes](/home/hammad/.gemini/antigravity-ide/brain/2586337b-9b03-438a-8488-854111771798/investigation_3_row_envelopes.png)
-![Spectrogram](/home/hammad/.gemini/antigravity-ide/brain/2586337b-9b03-438a-8488-854111771798/investigation_3_spectrogram.png)
+![Row Envelopes](outputs/investigation_3_row_envelopes.png)
+![Spectrogram](outputs/investigation_3_spectrogram.png)
 
 ## 4. ADSR VERIFICATION
 - **Linear or Curved**: The envelopes are properly curved (exponential). The R² scores for a linear fit are 0.4065 ("tight") and 0.6430 ("natural"), confirming they are not linear.
 - **Tight Shape Decay**: The "tight" shape correctly decays to precisely zero, as intended.
 - **Verdict**: The ADSR code is mathematically sound and is correctly generating curved envelopes. It is not the source of the issue.
 
-![ADSR Shapes](/home/hammad/.gemini/antigravity-ide/brain/2586337b-9b03-438a-8488-854111771798/investigation_4_adsr_shapes.png)
+![ADSR Shapes](outputs/investigation_4_adsr_shapes.png)
 
 ## 5. ROOT CAUSE CONCLUSION
 The primary problem is **B) The gain normalization is wrong**.
