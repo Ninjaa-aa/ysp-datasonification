@@ -98,7 +98,7 @@ def normalize_per_channel(matrix: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Global gain normalization (Phase 5)
+# Global gain normalization (Dr. Malaska's auto-gain request, 2026-07-09)
 # ---------------------------------------------------------------------------
 
 def compute_gain_reference(matrix: np.ndarray, gain_mode: str) -> tuple[float, float]:
@@ -355,6 +355,143 @@ def assign_frequencies(
 
 
 # ---------------------------------------------------------------------------
+# Lambda-max mapping (Phase 3 default: "tone, lambda max, intensity volume")
+# ---------------------------------------------------------------------------
+
+def lambda_max_per_row(
+    matrix: np.ndarray,
+    wavelengths: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Find each row's dominant emission wavelength and its intensity.
+
+    For fluorescence data the band carrying the most signal identifies *which
+    fluorophore is emitting*, so it is the physically meaningful driver of
+    pitch — different peak wavelengths become different, recognizable notes.
+    In this borehole dataset the peak band genuinely varies between events
+    (Band 8 at 313.7 nm, Band 13 at 341.2 nm, Band 21 at 385.3 nm, ...).
+
+    Parameters
+    ----------
+    matrix : np.ndarray
+        2-D array ``(n_rows, n_channels)`` of band intensities.
+    wavelengths : np.ndarray
+        1-D array of per-channel wavelength centers in nm, length
+        ``n_channels``.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        ``(peak_wavelength, peak_value)``, each of length ``n_rows``.
+        Rows with no signal report their peak value as 0.0.
+
+    Raises
+    ------
+    ValueError
+        If ``wavelengths`` length does not match the channel count.
+    """
+    if len(wavelengths) != matrix.shape[1]:
+        raise ValueError(
+            f"wavelengths length ({len(wavelengths)}) must match "
+            f"n_channels ({matrix.shape[1]})"
+        )
+
+    peak_idx = np.argmax(matrix, axis=1)
+    peak_value = matrix[np.arange(matrix.shape[0]), peak_idx]
+    peak_wavelength = np.asarray(wavelengths, dtype=np.float64)[peak_idx]
+    return peak_wavelength, peak_value
+
+
+def snap_to_scale(freqs: np.ndarray, scale_freqs: np.ndarray) -> np.ndarray:
+    """Quantize each frequency to the nearest note of a musical scale.
+
+    Quantizing trades a little precision for consonance: any combination of
+    notes drawn from a pentatonic set is harmonious by construction, which is
+    what turns a continuous wavelength sweep into something musical rather
+    than microtonal.
+
+    Parameters
+    ----------
+    freqs : np.ndarray
+        1-D array of frequencies in Hz.
+    scale_freqs : np.ndarray
+        1-D array of allowed note frequencies in Hz.
+
+    Returns
+    -------
+    np.ndarray
+        1-D array of the same length, each value snapped to the nearest
+        allowed note.  Snapping is done in log-frequency space so it matches
+        how pitch distance is perceived.
+    """
+    if len(scale_freqs) == 0:
+        return np.asarray(freqs, dtype=np.float64).copy()
+
+    log_f = np.log(np.asarray(freqs, dtype=np.float64))
+    log_scale = np.log(np.asarray(scale_freqs, dtype=np.float64))
+    nearest = np.argmin(np.abs(log_f[:, np.newaxis] - log_scale[np.newaxis, :]), axis=1)
+    return np.asarray(scale_freqs, dtype=np.float64)[nearest]
+
+
+def assign_frequencies_lambda_max(
+    matrix: np.ndarray,
+    wavelengths: np.ndarray,
+    min_freq: float,
+    max_freq: float,
+    scale_freqs: np.ndarray | None = None,
+    wl_range: tuple[float, float] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map each row's peak wavelength to a pitch, and its peak value to amplitude.
+
+    This is the mapping Dr. Malaska specified as the Phase 3 default:
+    *tone = lambda max, intensity = volume*.  It reduces each row to a single
+    voice, which is what makes an event read as one identifiable note instead
+    of a chord of every channel at once.
+
+    Shorter wavelengths (deep UV) map to lower pitches and longer wavelengths
+    to higher, so the audible sweep runs in the same direction as the spectrum.
+
+    Parameters
+    ----------
+    matrix : np.ndarray
+        2-D array ``(n_rows, n_channels)`` of band intensities.
+    wavelengths : np.ndarray
+        1-D per-channel wavelength centers in nm.
+    min_freq, max_freq : float
+        Output frequency window in Hz.
+    scale_freqs : np.ndarray or None
+        If given, snap pitches to these notes (e.g. a pentatonic set).
+    wl_range : tuple[float, float] or None
+        ``(wl_min, wl_max)`` to anchor the mapping.  Defaults to the span of
+        ``wavelengths``.  Pass the instrument's full range so pitches stay
+        comparable between a sparse slice and the whole dataset.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        ``(freqs, amplitudes)``, each of length ``n_rows``.  ``freqs`` is in
+        Hz; ``amplitudes`` holds the raw peak intensity per row, ready for the
+        normal scaling/gain path.
+    """
+    peak_wl, peak_value = lambda_max_per_row(matrix, wavelengths)
+
+    wl_min, wl_max = wl_range if wl_range is not None else (
+        float(np.min(wavelengths)), float(np.max(wavelengths))
+    )
+
+    if wl_max == wl_min:
+        freqs = np.full(len(peak_wl), np.sqrt(min_freq * max_freq))
+    else:
+        t = np.clip((peak_wl - wl_min) / (wl_max - wl_min), 0.0, 1.0)
+        log_min, log_max = np.log(min_freq), np.log(max_freq)
+        freqs = np.exp(log_min + t * (log_max - log_min))
+
+    if scale_freqs is not None:
+        freqs = snap_to_scale(freqs, scale_freqs)
+
+    return freqs, peak_value
+
+
+# ---------------------------------------------------------------------------
 # Wavelength table loader
 # ---------------------------------------------------------------------------
 
@@ -382,7 +519,7 @@ def load_wavelength_table(path: str) -> dict[int, float]:
 
 
 # ---------------------------------------------------------------------------
-# Parameter mapping (Phase 3)
+# Parameter mapping (project plan Phase 3)
 # ---------------------------------------------------------------------------
 
 def map_tone_from_column(

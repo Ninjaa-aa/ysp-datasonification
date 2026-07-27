@@ -81,6 +81,88 @@ class TestNormalizePerChannel:
         np.testing.assert_array_almost_equal(result[1], [1.0, 1.0])
 
 
+class TestLambdaMax:
+    """Phase 3's stated default: tone = lambda max, intensity = volume."""
+
+    WL = np.array([275.0, 330.0, 385.0, 446.0])
+
+    def test_finds_peak_band_wavelength_and_value(self):
+        from sonify.mapping import lambda_max_per_row
+        m = np.array([[1.0, 9.0, 2.0, 0.0],
+                      [0.0, 0.0, 0.0, 5.0]])
+        wl, val = lambda_max_per_row(m, self.WL)
+        np.testing.assert_array_equal(wl, [330.0, 446.0])
+        np.testing.assert_array_equal(val, [9.0, 5.0])
+
+    def test_mismatched_wavelength_length_raises(self):
+        from sonify.mapping import lambda_max_per_row
+        with pytest.raises(ValueError, match="must match"):
+            lambda_max_per_row(np.ones((2, 3)), self.WL)
+
+    def test_longer_wavelength_gives_higher_pitch(self):
+        """The audible sweep must run the same direction as the spectrum."""
+        from sonify.mapping import assign_frequencies_lambda_max
+        m = np.array([[9.0, 0.0, 0.0, 0.0],    # peak at 275 nm
+                      [0.0, 0.0, 0.0, 9.0]])   # peak at 446 nm
+        freqs, _ = assign_frequencies_lambda_max(m, self.WL, 150.0, 2500.0)
+        assert freqs[0] < freqs[1]
+
+    def test_pitches_span_the_requested_range(self):
+        from sonify.mapping import assign_frequencies_lambda_max
+        m = np.eye(4) * 9.0
+        freqs, _ = assign_frequencies_lambda_max(m, self.WL, 150.0, 2500.0)
+        assert freqs.min() == pytest.approx(150.0)
+        assert freqs.max() == pytest.approx(2500.0)
+
+    def test_amplitude_is_the_peak_value(self):
+        from sonify.mapping import assign_frequencies_lambda_max
+        m = np.array([[1.0, 42.0, 2.0, 0.0]])
+        _, amps = assign_frequencies_lambda_max(m, self.WL, 150.0, 2500.0)
+        assert amps[0] == 42.0
+
+    def test_silent_row_reports_zero_amplitude(self):
+        from sonify.mapping import assign_frequencies_lambda_max
+        m = np.zeros((1, 4))
+        _, amps = assign_frequencies_lambda_max(m, self.WL, 150.0, 2500.0)
+        assert amps[0] == 0.0
+
+    def test_snapping_restricts_output_to_scale_notes(self):
+        from sonify.mapping import assign_frequencies_lambda_max
+        scale = assign_frequencies_pentatonic(10, 220.0, 2)
+        m = np.eye(4) * 9.0
+        freqs, _ = assign_frequencies_lambda_max(
+            m, self.WL, 150.0, 2500.0, scale_freqs=scale
+        )
+        assert set(np.round(freqs, 6)).issubset(set(np.round(scale, 6)))
+
+    def test_wl_range_anchors_pitch_across_slices(self):
+        """A slice using only part of the spectrum must keep comparable pitches."""
+        from sonify.mapping import assign_frequencies_lambda_max
+        full = (275.0, 446.0)
+        m = np.array([[0.0, 9.0, 0.0, 0.0]])  # peak at 330 nm
+        f_slice, _ = assign_frequencies_lambda_max(
+            m, self.WL, 150.0, 2500.0, wl_range=full
+        )
+        m_wide = np.array([[9.0, 0.0, 0.0, 0.0], [0.0, 9.0, 0.0, 0.0]])
+        f_wide, _ = assign_frequencies_lambda_max(
+            m_wide, self.WL, 150.0, 2500.0, wl_range=full
+        )
+        assert f_slice[0] == pytest.approx(f_wide[1])
+
+
+class TestSnapToScale:
+    def test_snaps_to_nearest_note(self):
+        from sonify.mapping import snap_to_scale
+        scale = np.array([220.0, 440.0, 880.0])
+        out = snap_to_scale(np.array([230.0, 500.0, 870.0]), scale)
+        np.testing.assert_array_equal(out, [220.0, 440.0, 880.0])
+
+    def test_empty_scale_passes_through(self):
+        from sonify.mapping import snap_to_scale
+        f = np.array([300.0, 600.0])
+        np.testing.assert_array_equal(snap_to_scale(f, np.array([])), f)
+
+
 class TestAssignFrequencies:
     """Frequency assignment: correct count, range, spacing."""
 
@@ -168,7 +250,7 @@ class TestApplyIntensityColumn:
 
 
 class TestAutoGain:
-    """Phase 5: global gain normalization."""
+    """Global gain normalization (Dr. Malaska's auto-gain request)."""
 
     def test_gain_max_linear_clips_to_one(self):
         """max_linear: output max is 1.0, all values in [0, 1]."""

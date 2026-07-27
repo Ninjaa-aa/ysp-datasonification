@@ -20,7 +20,7 @@ class ParameterMap:
     Defaults reproduce the Phase 1/2 behavior: tone from band index,
     intensity from each band's own value.
     """
-    tone_source: Literal["band_index", "wavelength", "column"] = "band_index"
+    tone_source: Literal["band_index", "wavelength", "lambda_max", "column"] = "band_index"
     tone_column: str | None = None       # used when tone_source == "column"
     intensity_source: Literal["band_value", "column"] = "band_value"
     intensity_column: str | None = None  # used when intensity_source == "column"
@@ -34,6 +34,12 @@ class SonificationConfig:
     row_start: Optional[int] = None
     row_end: Optional[int] = None
     n_bins: Optional[int] = None  # defaults to detected channel count at runtime
+    # ── Trigger (Dr. Malaska's "which peaks should have sound") ───────────
+    # Function A of his two-function design: decides *whether* a row sounds,
+    # independently of `scale`/`gain_mode`, which decide *how loud* it is.
+    threshold: float = 0.0  # 0.0 = off, every row with any signal sounds
+    trigger_type: Literal["linear", "log"] = "linear"
+    target_tones: Optional[int] = None  # if set, solves `threshold` from the data
     min_freq: float = 150.0
     max_freq: float = 2500.0
     playback_speed: float = 10.0  # rows per second
@@ -47,7 +53,7 @@ class SonificationConfig:
     yes: bool = False  # skip interactive band-confirmation prompt
     wavelength_path: Optional[str] = None  # path to wavelength reference CSV
 
-    # ── Phase 2: visual display parameters ────────────────────────────────
+    # ── Visual display (project plan Phase 2) ─────────────────────────────
     visual_mode: Literal["dots", "circles"] = "dots"
     visual_scale: Literal["linear", "log10", "ln"] = "log10"
     colormap: str = "plasma"
@@ -58,21 +64,21 @@ class SonificationConfig:
     frame_width: int = 1280
     frame_height: int = 720
 
-    # ── Phase 3: trail display, channels, parameter mapping ───────────────
+    # ── Trail display, channel scaling, parameter mapping (plan Phase 3) ──
     trail_rows: int = 5  # number of rows visible simultaneously in trail
     max_frames: int = 500  # safety cap for render_all_frames()
     param_map: ParameterMap = field(default_factory=ParameterMap)
 
-    # ── Phase 4: minimap, output naming ───────────────────────────────────
+    # ── Minimap, output naming (project plan Phase 4) ─────────────────────
     show_minimap: bool = False
     output_name: Optional[str] = None  # base name for output files
 
-    # ── Phase 5: display improvements ─────────────────────────────────────
+    # ── Display (Dr. Malaska feedback, 2026-07-09) ────────────────────────
     marker_size: int = 120  # matplotlib scatter s= parameter
     marker_shape: Literal["circle", "square"] = "square"  # Dr. Malaska requested square
     show_colorbar: bool = True  # intensity scale colorbar
 
-    # ── Phase 5: auto-gain ────────────────────────────────────────────────
+    # ── Auto-gain (Dr. Malaska feedback, 2026-07-09) ──────────────────────
     gain_mode: Literal[
         "max_linear",       # global max = amplitude 1.0 (LINEAR response) [DEFAULT]
         "max_log",          # global max = amplitude 1.0 (LOG response)
@@ -84,19 +90,35 @@ class SonificationConfig:
         "mean_log",         # mean value = amplitude 0.5 (log)
     ] = "max_linear"
 
-    # ── Phase 5: sound enhancements ───────────────────────────────────────
-    sustain: float = 0.3  # deprecated: kept for backward compat, ignored by ADSR
+    # ── Sound character (Dr. Malaska: "tinkling wind chimes") ─────────────
     timbre: Literal["sine", "bell", "chime"] = "chime"  # Dr. Malaska: wind chimes
 
     # ── Sound quality update ──────────────────────────────────────────────
     adsr_shape: Literal["tight", "natural", "slow"] = "natural"
     timbre_partition: bool = True    # split channels into spectral groups
     smoothing: float = 0.3           # temporal amplitude smoothing (0=off, 1=max)
+    # Decaying tail so notes ring out into silence (Dr. Malaska's "sustain"
+    # request). Decays to zero by design — a held sustain would merge notes
+    # into a drone.
+    reverb_tail_ms: float = 0.0
 
     def validate(self) -> None:
         """Validate all parameters, raising ValueError on bad input."""
         if not self.input_path:
             raise ValueError("input_path must be specified")
+
+        if self.threshold < 0:
+            raise ValueError(f"threshold must be >= 0, got {self.threshold}")
+
+        if self.trigger_type not in ("linear", "log"):
+            raise ValueError(
+                f"trigger_type must be 'linear' or 'log', got '{self.trigger_type}'"
+            )
+
+        if self.target_tones is not None and self.target_tones < 1:
+            raise ValueError(
+                f"target_tones must be >= 1, got {self.target_tones}"
+            )
 
         if self.min_freq <= 0:
             raise ValueError(f"min_freq must be positive, got {self.min_freq}")
@@ -156,7 +178,7 @@ class SonificationConfig:
                 f"row_start ({self.row_start})"
             )
 
-        # ── Phase 2 visual validation ─────────────────────────────────────
+        # ── Visual validation ─────────────────────────────────────────────
         if self.visual_mode not in ("dots", "circles"):
             raise ValueError(
                 f"visual_mode must be 'dots' or 'circles', got '{self.visual_mode}'"
@@ -185,7 +207,7 @@ class SonificationConfig:
                     f"video_output directory does not exist: '{out_dir}'"
                 )
 
-        # ── Phase 3 validation ────────────────────────────────────────────
+        # ── Trail / parameter-mapping validation ──────────────────────────
         if not (1 <= self.trail_rows <= 20):
             raise ValueError(
                 f"trail_rows must be in [1, 20], got {self.trail_rows}"
@@ -198,9 +220,10 @@ class SonificationConfig:
 
         # Parameter mapping validation
         pm = self.param_map
-        if pm.tone_source not in ("band_index", "wavelength", "column"):
+        _VALID_TONE_SOURCES = ("band_index", "wavelength", "lambda_max", "column")
+        if pm.tone_source not in _VALID_TONE_SOURCES:
             raise ValueError(
-                f"tone_source must be 'band_index', 'wavelength', or 'column', "
+                f"tone_source must be one of {_VALID_TONE_SOURCES}, "
                 f"got '{pm.tone_source}'"
             )
         if pm.tone_source == "column" and not pm.tone_column:
@@ -219,7 +242,7 @@ class SonificationConfig:
                 "intensity_source is 'column'"
             )
 
-        # ── Phase 5 validation ─────────────────────────────────────────
+        # ── Display / gain / sound validation ──────────────────────────
         if self.marker_size < 10:
             raise ValueError(
                 f"marker_size must be >= 10, got {self.marker_size}"
@@ -241,11 +264,6 @@ class SonificationConfig:
                 f"got '{self.gain_mode}'"
             )
 
-        if not (0.0 <= self.sustain <= 1.0):
-            raise ValueError(
-                f"sustain must be in [0.0, 1.0], got {self.sustain}"
-            )
-
         if self.timbre not in ("sine", "bell", "chime"):
             raise ValueError(
                 f"timbre must be 'sine', 'bell', or 'chime', "
@@ -262,4 +280,9 @@ class SonificationConfig:
         if not (0.0 <= self.smoothing <= 1.0):
             raise ValueError(
                 f"smoothing must be in [0.0, 1.0], got {self.smoothing}"
+            )
+
+        if self.reverb_tail_ms < 0:
+            raise ValueError(
+                f"reverb_tail_ms must be >= 0, got {self.reverb_tail_ms}"
             )

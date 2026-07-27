@@ -37,13 +37,20 @@ from sonify.band_detect import detect_band_columns, confirm_with_user
 from sonify.preprocess import sort_by_row_order, clean, rebin, rebin_wavelengths
 from sonify.mapping import (
     scale_values,
-    normalize_per_channel,
     apply_global_gain,
     assign_frequencies,
+    assign_frequencies_pentatonic,
+    assign_frequencies_lambda_max,
     load_wavelength_table,
     map_tone_from_column,
     apply_intensity_column,
     smooth_amplitude_matrix,
+)
+from sonify.events import (
+    apply_trigger,
+    row_trigger_mask,
+    summarize_events,
+    threshold_for_target_tones,
 )
 from sonify.synth import synthesize
 from sonify.playback import play
@@ -101,6 +108,31 @@ PRESETS = {
         "scale":              "linear",
         "smoothing":          0.0,
     },
+
+    "event": {
+        # Target: Dr. Malaska's two-function design (2026-07-24) end to end.
+        # A linear trigger picks which peaks sound; log intensity sets how loud;
+        # each event is pitched by its dominant emission wavelength.
+        # ~25 tones matches his "probably above 10" guidance.
+        "n_bins":             None,  # keep all channels so lambda-max is exact
+        "target_tones":       25,
+        "trigger_type":       "linear",
+        "tone_source":        "lambda_max",
+        "freq_mode":          "pentatonic",
+        "pentatonic_root":    220.0,
+        "pentatonic_octaves": 3,
+        "timbre":             "chime",
+        "timbre_partition":   False,  # single voice; partitioning needs >= 3 channels
+        "adsr_shape":         "natural",
+        "gain_mode":          "max_log",
+        "scale":              "log10",
+        "smoothing":          0.0,
+        # 25 rows/s puts the full descent at ~2.7 min with a median ~8.6 s
+        # between events. At 10 rows/s the median gap is 21.6 s (max 53 s),
+        # which reads as dead air rather than sparse wind chimes.
+        "playback_speed":     25.0,
+        "reverb_tail_ms":     1200.0,  # carries each strike into the gaps
+    },
 }
 
 
@@ -113,6 +145,10 @@ GLOBAL_DEFAULTS = {
     "gain_mode":          "max_linear",
     "scale":              "log10",
     "smoothing":          0.3,
+    "threshold":          0.0,
+    "trigger_type":       "linear",
+    "tone_source":        "band_index",
+    "reverb_tail_ms":     0.0,
 }
 
 
@@ -152,7 +188,7 @@ def apply_global_defaults(
         args.n_bins = n_detected_channels
 
 
-# ── Interactive playback speed prompt (Phase 5) ───────────────────────────
+# ── Interactive playback speed prompt (Dr. Malaska, 2026-07-09) ───────────
 
 def prompt_playback_speed(n_rows: int, skip: bool) -> float:
     """Prompt the user to choose a playback speed interactively.
@@ -227,122 +263,140 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    # ── Phase 1 arguments ───────────────────────────────────────────────
-    p.add_argument(
+    # Flags are grouped so --help reads as a menu rather than a flat list of 50.
+    g_core   = p.add_argument_group("Core", "Input, row range, channels")
+    g_audio  = p.add_argument_group("Audio", "Pitch, loudness, timbre, envelope")
+    g_trig   = p.add_argument_group(
+        "Trigger", "Which measurements sound at all (independent of how loud)")
+    g_map    = p.add_argument_group("Mapping", "What data drives pitch and volume")
+    g_visual = p.add_argument_group("Visual", "Display and video rendering")
+    g_out    = p.add_argument_group("Output", "Where results are written")
+
+    g_core.add_argument(
         "--input", default=_DEFAULT_INPUT,
         help="Path to the input CSV file",
     )
-    p.add_argument("--row-start", type=int, default=None, help="First row index to include (0-based)")
-    p.add_argument("--row-end", type=int, default=None, help="Last row index (exclusive)")
+    g_core.add_argument("--row-start", type=int, default=None, help="First row index to include (0-based)")
+    g_core.add_argument("--row-end", type=int, default=None, help="Last row index (exclusive)")
     # n_bins: default=None (sentinel for preset override detection)
-    p.add_argument("--n-bins", type=int, default=None, help="Number of output frequency bins (channels); default = detected count")
-    p.add_argument("--min-freq", type=float, default=150.0, help="Lowest tone frequency in Hz")
-    p.add_argument("--max-freq", type=float, default=2500.0, help="Highest tone frequency in Hz")
-    p.add_argument("--playback-speed", type=float, default=None,
+    g_core.add_argument("--n-bins", type=int, default=None, help="Number of output frequency bins (channels); default = detected count")
+    g_trig.add_argument("--threshold", type=float, default=None,
+                   help="Trigger threshold: rows with no band above this stay silent, "
+                        "applied before --scale (0.0 = off, every row sounds)")
+    g_trig.add_argument("--trigger-type", choices=["linear", "log"], default=None,
+                   help="Trigger comparison domain (Dr. Malaska recommends linear)")
+    g_trig.add_argument("--target-tones", type=int, default=None,
+                   help="Solve --threshold from the data to yield ~N sounding events "
+                        "(Dr. Malaska: 'probably above 10')")
+    g_audio.add_argument("--min-freq", type=float, default=150.0, help="Lowest tone frequency in Hz")
+    g_audio.add_argument("--max-freq", type=float, default=2500.0, help="Highest tone frequency in Hz")
+    g_audio.add_argument("--playback-speed", type=float, default=None,
                    help="Rows per second (if omitted, prompts interactively)")
-    p.add_argument("--volume", type=float, default=0.8, help="Master gain 0.0-1.0")
+    g_audio.add_argument("--volume", type=float, default=0.8, help="Master gain 0.0-1.0")
     # scale: default=None (sentinel for preset)
-    p.add_argument("--scale", choices=["linear", "log10", "ln"], default=None, help="Intensity scaling mode (audio)")
+    g_audio.add_argument("--scale", choices=["linear", "log10", "ln"], default=None, help="Intensity scaling mode (audio)")
     # freq_mode: default=None (sentinel for preset)
-    p.add_argument("--freq-mode", choices=["index", "wavelength", "pentatonic"], default=None, help="Frequency assignment mode")
-    p.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate")
-    p.add_argument("--output", type=str, default=None, help="Output .wav path (omit to play through speakers)")
-    p.add_argument("--yes", action="store_true", help="Skip interactive prompts (band confirmation, playback speed)")
-    p.add_argument(
+    g_audio.add_argument("--freq-mode", choices=["index", "wavelength", "pentatonic"], default=None, help="Frequency assignment mode")
+    g_audio.add_argument("--sample-rate", type=int, default=44100, help="Audio sample rate")
+    g_out.add_argument("--output", type=str, default=None, help="Output .wav path (omit to play through speakers)")
+    g_core.add_argument("--yes", action="store_true", help="Skip interactive prompts (band confirmation, playback speed)")
+    g_map.add_argument(
         "--wavelength-path", default=_DEFAULT_WAVELENGTH,
         help="Path to band-number-to-wavelength CSV (for --freq-mode wavelength)",
     )
 
     # ── Pentatonic arguments ─────────────────────────────────────────────
-    p.add_argument("--pentatonic-root", type=float, default=None,
+    g_audio.add_argument("--pentatonic-root", type=float, default=None,
                    help="Root note in Hz for pentatonic mode (default: 220.0 = A3)")
-    p.add_argument("--pentatonic-octaves", type=int, default=None,
+    g_audio.add_argument("--pentatonic-octaves", type=int, default=None,
                    help="Number of octaves to span in pentatonic mode (default: 3)")
 
-    # ── Phase 2 visual arguments ─────────────────────────────────────────
-    p.add_argument("--visual-mode", choices=["dots", "circles"], default="dots",
+    # ── Visual arguments ─────────────────────────────────────────────────
+    g_visual.add_argument("--visual-mode", choices=["dots", "circles"], default="dots",
                    help="Visual display mode")
-    p.add_argument("--visual-scale", choices=["linear", "log10", "ln"], default="log10",
+    g_visual.add_argument("--visual-scale", choices=["linear", "log10", "ln"], default="log10",
                    help="Intensity scaling mode for visual display (independent of --scale)")
-    p.add_argument("--colormap", type=str, default="plasma",
+    g_visual.add_argument("--colormap", type=str, default="plasma",
                    help="Matplotlib colormap name for visual display")
-    p.add_argument("--show-labels", action="store_true",
+    g_visual.add_argument("--show-labels", action="store_true",
                    help="Show channel index/wavelength labels below each dot/circle")
-    p.add_argument("--video-output", type=str, default=None,
+    g_out.add_argument("--video-output", type=str, default=None,
                    help="Output video path (.mp4 or .avi) with synchronized audio")
-    p.add_argument("--live-display", action="store_true",
+    g_visual.add_argument("--live-display", action="store_true",
                    help="Show live matplotlib animation during playback")
-    p.add_argument("--video-title", type=str,
+    g_visual.add_argument("--video-title", type=str,
                    default="Sounds of Deep Ice Fluorescence",
                    help="Title string displayed in visual frames")
-    p.add_argument("--frame-width", type=int, default=1280,
+    g_visual.add_argument("--frame-width", type=int, default=1280,
                    help="Visual frame width in pixels")
-    p.add_argument("--frame-height", type=int, default=720,
+    g_visual.add_argument("--frame-height", type=int, default=720,
                    help="Visual frame height in pixels")
 
-    # ── Phase 3 arguments ────────────────────────────────────────────────
-    p.add_argument("--trail-rows", type=int, default=5,
+    # ── Trail / parameter-mapping arguments ──────────────────────────────
+    g_visual.add_argument("--trail-rows", type=int, default=5,
                    help="Number of trail rows visible simultaneously (1-20)")
-    p.add_argument("--max-frames", type=int, default=500,
+    g_visual.add_argument("--max-frames", type=int, default=500,
                    help="Maximum frames to render into video (safety cap)")
-    p.add_argument("--tone-source",
-                   choices=["band_index", "wavelength", "column"],
-                   default="band_index",
-                   help="What drives the pitch of each row")
-    p.add_argument("--tone-column", type=str, default=None,
+    g_map.add_argument("--tone-source",
+                   choices=["band_index", "wavelength", "lambda_max", "column"],
+                   default=None,
+                   help="What drives the pitch. 'lambda_max' pitches each row by its "
+                        "dominant emission wavelength and collapses it to one voice")
+    g_map.add_argument("--tone-column", type=str, default=None,
                    help="Column name for --tone-source column")
-    p.add_argument("--intensity-source",
+    g_map.add_argument("--intensity-source",
                    choices=["band_value", "column"],
                    default="band_value",
                    help="What drives the volume of each row")
-    p.add_argument("--intensity-column", type=str, default=None,
+    g_map.add_argument("--intensity-column", type=str, default=None,
                    help="Column name for --intensity-source column")
 
-    # ── Phase 4 arguments ────────────────────────────────────────────────
-    p.add_argument("--show-minimap", action="store_true",
+    # ── Minimap / output-naming arguments ────────────────────────────────
+    g_visual.add_argument("--show-minimap", action="store_true",
                    help="Show overview minimap panel in video frames")
-    p.add_argument("--output-name", type=str, default=None,
+    g_out.add_argument("--output-name", type=str, default=None,
                    help="Base name for output files (produces outputs/NAME.wav + .mp4)")
 
-    # ── Phase 5 arguments: display ───────────────────────────────────────
-    p.add_argument("--marker-size", type=int, default=120,
+    # ── Display arguments (Dr. Malaska, 2026-07-09) ──────────────────────
+    g_visual.add_argument("--marker-size", type=int, default=120,
                    help="Marker size for scatter plots (matplotlib s= parameter)")
-    p.add_argument("--marker-shape", choices=["circle", "square"], default="square",
+    g_visual.add_argument("--marker-shape", choices=["circle", "square"], default="square",
                    help="Marker shape for scatter plots")
-    p.add_argument("--show-colorbar", action="store_true", default=True,
+    g_visual.add_argument("--show-colorbar", action="store_true", default=True,
                    help="Show intensity colorbar (default: on)")
-    p.add_argument("--no-colorbar", action="store_false", dest="show_colorbar",
+    g_visual.add_argument("--no-colorbar", action="store_false", dest="show_colorbar",
                    help="Hide intensity colorbar")
 
-    # ── Phase 5 arguments: auto-gain ─────────────────────────────────────
+    # ── Auto-gain arguments (Dr. Malaska, 2026-07-09) ────────────────────
     # gain_mode: default=None (sentinel for preset)
-    p.add_argument("--gain-mode",
+    g_audio.add_argument("--gain-mode",
                    choices=["max_linear", "max_log", "pct90_linear", "pct90_log",
                             "median_linear", "median_log", "mean_linear", "mean_log"],
                    default=None,
                    help="Global gain normalization mode")
 
-    # ── Phase 5 arguments: sound ─────────────────────────────────────────
-    p.add_argument("--sustain", type=float, default=0.3,
-                   help="(Deprecated) Amplitude sustain — ignored, ADSR handles envelope")
+    # ── Sound-character arguments ────────────────────────────────────────
     # timbre: default=None (sentinel for preset)
-    p.add_argument("--timbre", choices=["sine", "bell", "chime"], default=None,
+    g_audio.add_argument("--timbre", choices=["sine", "bell", "chime"], default=None,
                    help="Synthesis timbre (sine=pure, bell=harmonic partials, chime=inharmonic)")
 
     # ── Sound quality arguments ──────────────────────────────────────────
-    p.add_argument("--preset", choices=["none", "chime", "ambient", "scientific"],
+    g_core.add_argument("--preset", choices=["none", "chime", "ambient", "scientific", "event"],
                    default="none",
                    help="Preset configuration (overrides individual settings not explicitly provided)")
     # adsr_shape: default=None (sentinel for preset)
-    p.add_argument("--adsr-shape", choices=["tight", "natural", "slow"], default=None,
+    g_audio.add_argument("--adsr-shape", choices=["tight", "natural", "slow"], default=None,
                    help="ADSR envelope shape (tight=plucked, natural=bell, slow=pad)")
     # smoothing: default=None (sentinel for preset)
-    p.add_argument("--smoothing", type=float, default=None,
+    g_audio.add_argument("--smoothing", type=float, default=None,
                    help="Temporal amplitude smoothing 0.0-1.0 (0=off, 0.3=light, 0.7=heavy)")
+    g_audio.add_argument("--reverb-tail-ms", type=float, default=None,
+                   help="Decaying tail so notes ring out into silence (0=off, "
+                        "600-1500 suits sparse event mode)")
     # timbre_partition: default=None (sentinel for preset)
-    p.add_argument("--timbre-partition", action="store_true", default=None, dest="timbre_partition",
+    g_audio.add_argument("--timbre-partition", action="store_true", default=None, dest="timbre_partition",
                    help="Enable timbral partitioning (different timbres per spectral group)")
-    p.add_argument("--no-timbre-partition", action="store_false", dest="timbre_partition",
+    g_audio.add_argument("--no-timbre-partition", action="store_false", dest="timbre_partition",
                    help="Disable timbral partitioning (all channels use same timbre)")
 
     return p
@@ -363,6 +417,13 @@ def main() -> None:
     # playback_speed is None when user didn't set it on CLI.
     # We will resolve it after preset application, before building config.
     playback_speed_from_cli = args.playback_speed  # None or float
+
+    # Record which trigger settings came from the command line, before presets
+    # fill in the blanks.  An explicit --threshold must beat a preset's
+    # --target-tones, otherwise `--preset event --threshold 400` silently
+    # renders the preset's tone count instead of the threshold asked for.
+    threshold_from_cli = args.threshold is not None
+    target_tones_from_cli = args.target_tones is not None
 
     # ── 1. Load CSV ───────────────────────────────────────────────────────
     input_path = args.input
@@ -408,6 +469,10 @@ def main() -> None:
 
     # ── 4. Apply preset and global defaults ───────────────────────────────
     apply_preset(args, n_detected)
+
+    # An explicitly-given --threshold wins over a preset-supplied --target-tones.
+    if threshold_from_cli and not target_tones_from_cli:
+        args.target_tones = None
     apply_global_defaults(args, n_detected)
 
     # Resolve playback speed if still None after preset
@@ -429,11 +494,21 @@ def main() -> None:
         intensity_column=args.intensity_column,
     )
 
+    # lambda_max needs the raw per-band spectrum to locate the peak, so
+    # rebinning would blur exactly the information it depends on.
+    if args.tone_source == "lambda_max" and args.n_bins != n_detected:
+        log("FREQ", f"lambda_max tone: using all {n_detected} channels "
+            f"(ignoring --n-bins {args.n_bins})")
+        args.n_bins = n_detected
+
     config = SonificationConfig(
         input_path=args.input,
         row_start=args.row_start,
         row_end=args.row_end,
         n_bins=args.n_bins,
+        threshold=args.threshold,
+        trigger_type=args.trigger_type,
+        target_tones=args.target_tones,
         min_freq=args.min_freq,
         max_freq=args.max_freq,
         playback_speed=args.playback_speed,
@@ -446,7 +521,7 @@ def main() -> None:
         wavelength_path=args.wavelength_path,
         pentatonic_root=args.pentatonic_root,
         pentatonic_octaves=args.pentatonic_octaves,
-        # Phase 2 visual parameters
+        # Visual parameters
         visual_mode=args.visual_mode,
         visual_scale=args.visual_scale,
         colormap=args.colormap,
@@ -456,23 +531,23 @@ def main() -> None:
         video_title=args.video_title,
         frame_width=args.frame_width,
         frame_height=args.frame_height,
-        # Phase 3+4
+        # Trail, minimap, parameter mapping
         trail_rows=args.trail_rows,
         max_frames=args.max_frames,
         param_map=param_map,
         show_minimap=args.show_minimap,
         output_name=args.output_name,
-        # Phase 5
+        # Display / gain / sound
         marker_size=args.marker_size,
         marker_shape=args.marker_shape,
         show_colorbar=args.show_colorbar,
         gain_mode=args.gain_mode,
-        sustain=args.sustain,
         timbre=args.timbre,
         # Sound quality
         adsr_shape=args.adsr_shape,
         timbre_partition=args.timbre_partition,
         smoothing=args.smoothing,
+        reverb_tail_ms=args.reverb_tail_ms,
     )
     config.validate()
 
@@ -511,14 +586,36 @@ def main() -> None:
 
     n_channels = matrix.shape[1]
 
+    # ── 9b. Trigger gate — Dr. Malaska's "which peaks should have sound" ───
+    # Function A of his two-function design (2026-07-24): a linear-domain
+    # threshold decides *whether* a row sounds, entirely separately from
+    # --scale, which decides *how loud* it is.  Applied before the audio and
+    # visual matrices diverge so the video and WAV agree on what is silent.
+    if config.target_tones is not None:
+        solved = threshold_for_target_tones(matrix, config.target_tones)
+        log("TRIGGER", f"Target {config.target_tones} tones -> "
+            f"threshold {solved:.1f}")
+        config.threshold = solved
+
+    if config.threshold > 0:
+        mask = row_trigger_mask(matrix, config.threshold, config.trigger_type)
+        events = summarize_events(matrix, mask)
+        matrix = apply_trigger(matrix, config.threshold, config.trigger_type)
+        log("TRIGGER", f"{config.trigger_type} threshold {config.threshold:g}: "
+            f"{int(mask.sum())} of {len(mask)} rows sound, "
+            f"in {len(events)} event cluster(s)")
+    else:
+        log("TRIGGER", "Trigger gate: off (threshold=0.0, every row sounds)")
+
     # ── Save clean matrix BEFORE audio scaling (for visual path) ──────────
     want_visual = config.video_output or config.live_display
     if want_visual:
         clean_matrix = matrix.copy()
 
-    # ── 10. Prepare wavelengths (if wavelength mode) ──────────────────────
+    # ── 10. Prepare wavelengths (if any wavelength-driven mode) ───────────
     wavelengths_array = None
-    if config.freq_mode == "wavelength" or config.param_map.tone_source == "wavelength":
+    if (config.freq_mode == "wavelength"
+            or config.param_map.tone_source in ("wavelength", "lambda_max")):
         if wl_table is None:
             wl_table = load_wavelength_table(config.wavelength_path)
         # Build per-detected-band wavelength array using band indices
@@ -528,6 +625,33 @@ def main() -> None:
         if did_rebin:
             wl_per_band = rebin_wavelengths(wl_per_band, n_bins)
         wavelengths_array = wl_per_band
+
+    # ── 10b. Lambda-max collapse (Phase 3 default: tone=lambda max) ───────
+    # Reduce each row to one voice pitched by its dominant emission
+    # wavelength, so an event reads as a single identifiable note rather than
+    # a chord of every channel at once.  Done before scaling so the peak
+    # intensity flows through the normal gain path as the note's loudness.
+    lambda_max_freqs = None
+    if config.param_map.tone_source == "lambda_max":
+        scale_freqs = None
+        if config.freq_mode == "pentatonic":
+            scale_freqs = assign_frequencies_pentatonic(
+                5 * config.pentatonic_octaves,
+                root_hz=config.pentatonic_root,
+                n_octaves=config.pentatonic_octaves,
+            )
+        lambda_max_freqs, peak_values = assign_frequencies_lambda_max(
+            matrix, wavelengths_array, config.min_freq, config.max_freq,
+            scale_freqs=scale_freqs,
+        )
+        # Collapse to a single voice. The visual path already saved the full
+        # spectral matrix above, so the video still shows all channels.
+        matrix = peak_values[:, np.newaxis]
+        n_channels = 1
+        n_distinct = len(np.unique(np.round(lambda_max_freqs, 1)))
+        log("FREQ", f"Lambda-max tone: {n_distinct} distinct pitches, "
+            f"{lambda_max_freqs.min():.1f}-{lambda_max_freqs.max():.1f} Hz"
+            + (" (snapped to pentatonic)" if scale_freqs is not None else ""))
 
     # ── 11. Scale values (audio) ──────────────────────────────────────────
     matrix = scale_values(matrix, config.scale)
@@ -546,7 +670,12 @@ def main() -> None:
 
     # ── 13. Assign frequencies ────────────────────────────────────────────
     pm = config.param_map
-    if pm.tone_source == "column":
+    if pm.tone_source == "lambda_max":
+        # One voice per row, already pitched in step 10b.
+        freqs = lambda_max_freqs[:, np.newaxis]
+        log("SYNTH", f"Frequencies: {freqs.min():.1f} Hz - {freqs.max():.1f} Hz "
+            f"(1 voice, lambda-max driven)")
+    elif pm.tone_source == "column":
         # Column-driven tone: per-row frequencies
         if pm.tone_column not in df.columns:
             raise ValueError(
@@ -598,11 +727,14 @@ def main() -> None:
     log("SYNTH", f"Synthesizing {len(matrix)} rows at {config.playback_speed} "
         f"rows/sec -> {duration_s:.1f}s audio "
         f"(adsr={config.adsr_shape}, {partition_str})")
+    if config.reverb_tail_ms > 0:
+        log("SYNTH", f"Reverb tail: {config.reverb_tail_ms:.0f}ms decay")
     waveform = synthesize(
         matrix, freqs, seconds_per_row, config.sample_rate, config.volume,
         timbre=config.timbre,
         adsr_shape=config.adsr_shape,
         timbre_partition=config.timbre_partition,
+        reverb_tail_ms=config.reverb_tail_ms,
     )
     duration = len(waveform) / config.sample_rate
 

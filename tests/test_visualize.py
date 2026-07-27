@@ -185,7 +185,7 @@ class TestTrailDisplay:
 
 
 class TestDisplayFixes:
-    """Phase 5: marker size, shape, and colorbar."""
+    """Marker size, shape, and colorbar (Dr. Malaska, 2026-07-09)."""
 
     @pytest.fixture(autouse=True)
     def _set_agg_backend(self):

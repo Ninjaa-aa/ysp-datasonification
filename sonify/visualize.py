@@ -1,12 +1,12 @@
 """
-Visual rendering engine for the sonification toolkit (Phase 2 + Phase 3 + Phase 5).
+Visual rendering engine for the sonification toolkit.
 
 Renders per-row intensity data as colored dots/circles (≤ 256 channels) or
 heatmap strips (> 256 channels) on a dark background.  Supports a **trail**
 display — N rows visible simultaneously, with older rows fading in opacity
 and marker size.
 
-Phase 5 additions:
+Display refinements requested by Dr. Malaska (2026-07-09):
 - Configurable marker size and shape (circle/square)
 - Intensity colorbar
 - Global gain normalization via apply_visual_scale() gain_mode parameter
@@ -21,7 +21,7 @@ from typing import Optional
 
 import numpy as np
 
-from sonify.mapping import scale_values, normalize_per_channel
+from sonify.mapping import scale_values
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +284,7 @@ def render_frame(
         pad=10,
     )
 
-    # ── Colorbar (Phase 5) ────────────────────────────────────────────
+    # ── Colorbar (Dr. Malaska: "add a scale somewhere?") ──────────────
     if show_colorbar:
         norm = Normalize(vmin=0, vmax=1)
         sm = ScalarMappable(cmap=cmap, norm=norm)

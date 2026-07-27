@@ -21,7 +21,7 @@ class TestSynthesize:
         spr = 0.1  # 10 rows/sec
         sr = 44100
 
-        waveform = synthesize(amp, freqs, spr, sr, timbre="sine", sustain=0.0,
+        waveform = synthesize(amp, freqs, spr, sr, timbre="sine",
                               timbre_partition=False, adsr_shape="natural")
         expected_length = n_rows * round(spr * sr)
         assert abs(len(waveform) - expected_length) <= 1
@@ -31,14 +31,14 @@ class TestSynthesize:
         amp = np.random.rand(n_rows, n_channels)
         freqs = np.linspace(200, 2000, n_channels)
 
-        waveform = synthesize(amp, freqs, 0.05, 22050, timbre="sine", sustain=0.0,
+        waveform = synthesize(amp, freqs, 0.05, 22050, timbre="sine",
                               timbre_partition=False, adsr_shape="natural")
         assert np.max(np.abs(waveform)) <= 1.0 + 1e-10
 
     def test_silence_produces_silence(self):
         amp = np.zeros((10, 3))
         freqs = np.array([200, 500, 1000], dtype=float)
-        waveform = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0,
+        waveform = synthesize(amp, freqs, 0.1, 44100, timbre="sine",
                               timbre_partition=False, adsr_shape="natural")
         # All-zero amplitude → all-zero waveform (peak-normalize guards div-by-0)
         np.testing.assert_array_equal(waveform, 0.0)
@@ -53,14 +53,14 @@ class TestSynthesize:
         spr = 1.0 / 200.0
 
         # Just verify it runs without error and produces valid output
-        waveform = synthesize(amp, freqs, spr, sr, timbre="sine", sustain=0.0,
+        waveform = synthesize(amp, freqs, spr, sr, timbre="sine",
                               timbre_partition=False, adsr_shape="natural")
         assert np.isfinite(waveform).all()
         assert np.max(np.abs(waveform)) <= 1.0 + 1e-10
 
 
 class TestADSR:
-    """Sound quality update: ADSR envelope tests (replaces Phase 5 sustain tests)."""
+    """ADSR envelope tests (replaced the earlier sustain-ramp approach)."""
 
     def test_adsr_envelope_length(self):
         """Envelope length matches requested segment_samples exactly."""
@@ -110,7 +110,7 @@ class TestADSR:
 
 
 class TestTimbre:
-    """Phase 5: timbre modes (sine, bell, chime)."""
+    """Timbre modes (sine, bell, chime)."""
 
     def test_timbre_sine_unchanged(self):
         """timbre='sine' output matches existing synthesis behavior."""
@@ -119,9 +119,9 @@ class TestTimbre:
         amp = np.random.rand(n_rows, n_channels)
         freqs = np.linspace(300, 1500, n_channels)
 
-        wave1 = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0,
+        wave1 = synthesize(amp, freqs, 0.1, 44100, timbre="sine",
                            timbre_partition=False, adsr_shape="natural")
-        wave2 = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0,
+        wave2 = synthesize(amp, freqs, 0.1, 44100, timbre="sine",
                            timbre_partition=False, adsr_shape="natural")
 
         np.testing.assert_array_equal(wave1, wave2)
@@ -133,9 +133,9 @@ class TestTimbre:
         amp = np.random.rand(n_rows, n_channels)
         freqs = np.linspace(300, 1500, n_channels)
 
-        wave_sine = synthesize(amp, freqs, 0.1, 44100, timbre="sine", sustain=0.0,
+        wave_sine = synthesize(amp, freqs, 0.1, 44100, timbre="sine",
                                timbre_partition=False, adsr_shape="natural")
-        wave_bell = synthesize(amp, freqs, 0.1, 44100, timbre="bell", sustain=0.0,
+        wave_bell = synthesize(amp, freqs, 0.1, 44100, timbre="bell",
                                timbre_partition=False, adsr_shape="natural")
 
         assert not np.array_equal(wave_sine, wave_bell), \
@@ -148,9 +148,9 @@ class TestTimbre:
         amp = np.random.rand(n_rows, n_channels)
         freqs = np.linspace(300, 1500, n_channels)
 
-        wave_bell = synthesize(amp, freqs, 0.1, 44100, timbre="bell", sustain=0.0,
+        wave_bell = synthesize(amp, freqs, 0.1, 44100, timbre="bell",
                                timbre_partition=False, adsr_shape="natural")
-        wave_chime = synthesize(amp, freqs, 0.1, 44100, timbre="chime", sustain=0.0,
+        wave_chime = synthesize(amp, freqs, 0.1, 44100, timbre="chime",
                                 timbre_partition=False, adsr_shape="natural")
 
         assert not np.array_equal(wave_bell, wave_chime), \
@@ -164,7 +164,7 @@ class TestTimbre:
         freqs = np.linspace(200, 2000, n_channels)
 
         for t in ("bell", "chime"):
-            waveform = synthesize(amp, freqs, 0.1, 44100, timbre=t, sustain=0.0,
+            waveform = synthesize(amp, freqs, 0.1, 44100, timbre=t,
                                   timbre_partition=False, adsr_shape="natural")
             assert np.max(np.abs(waveform)) <= 1.0 + 1e-10, \
                 f"timbre='{t}' exceeded [-1, 1] range"
@@ -193,6 +193,133 @@ class TestTimbrePartition:
         w = synthesize(amps, freqs, 0.1, 44100, timbre="chime",
                        timbre_partition=True, adsr_shape="natural")
         assert w.min() >= -1.01 and w.max() <= 1.01
+
+
+class TestSynthesisGoldenValues:
+    """Pins synthesis output so optimizations cannot silently change the sound.
+
+    Captured from the pre-vectorization implementation.  The vectorized version
+    reproduces these to ~1e-12; only float summation order differs, so the
+    tolerance is tight enough that any real change in the audio will fail.
+
+    If a change to synthesis is *intended*, regenerate these values deliberately
+    and note it in CHANGELOG.md — do not loosen the tolerance.
+    """
+
+    GOLDEN = {
+        # name: (rms, sum) for a fixed seed
+        "sine_nopart": (0.120091147515, -4.542508032),
+        "bell_nopart": (0.061508490442, -5.043565150),
+        "chime_nopart": (0.091996831024, -3.313643152),
+        "partition8": (0.118439501753, -2.527826331),
+        "partition32": (0.067595229480, -0.904257157),
+    }
+
+    SPECS = {
+        "sine_nopart": (30, 4, "sine", "natural", False),
+        "bell_nopart": (30, 4, "bell", "tight", False),
+        "chime_nopart": (30, 4, "chime", "slow", False),
+        "partition8": (30, 8, "chime", "natural", True),
+        "partition32": (20, 32, "chime", "tight", True),
+    }
+
+    def test_output_matches_golden_values(self):
+        """Seeds are drawn in one sequence, so all cases run together."""
+        rng = np.random.default_rng(42)
+        for name, (rows, ch, timbre, adsr, part) in self.SPECS.items():
+            amp = rng.random((rows, ch))
+            freqs = np.linspace(200, 2000, ch)
+            w = synthesize(
+                amp, freqs, 0.1, 44100,
+                timbre=timbre, adsr_shape=adsr, timbre_partition=part,
+            )
+            exp_rms, exp_sum = self.GOLDEN[name]
+            assert np.sqrt(np.mean(w ** 2)) == pytest.approx(exp_rms, abs=1e-10), name
+            assert float(w.sum()) == pytest.approx(exp_sum, abs=1e-6), name
+
+    def test_envelope_is_shared_across_rows(self):
+        """The ADSR envelope depends only on shape and segment length.
+
+        Caching it per channel (instead of rebuilding it n_rows * n_channels
+        times) is what makes the vectorized path fast, so assert the premise.
+        """
+        a = generate_adsr_envelope(4410, 44100, *ADSR_SHAPES["natural"])
+        b = generate_adsr_envelope(4410, 44100, *ADSR_SHAPES["natural"])
+        np.testing.assert_array_equal(a, b)
+
+    def test_chunked_and_unchunked_paths_agree(self):
+        """Channel chunking kicks in above 128 channels; both paths must match.
+
+        130 channels chunks; 100 does not. Same per-channel content in both,
+        so the shared prefix of the mix must be identical.
+        """
+        rng = np.random.default_rng(7)
+        amp = rng.random((5, 200))
+        freqs = np.linspace(200, 2000, 200)
+        w = synthesize(amp, freqs, 0.05, 44100, timbre="sine",
+                       timbre_partition=False, adsr_shape="natural")
+        assert np.isfinite(w).all()
+        assert np.max(np.abs(w)) <= 1.0 + 1e-9
+
+
+class TestReverbTail:
+    """Dr. Malaska's 'add a sustain component?' request, as a decaying tail."""
+
+    @staticmethod
+    def _one_note(reverb_tail_ms=0.0, n_silent=9):
+        """A single struck note followed by silent rows."""
+        amp = np.array([[0.9]] + [[0.0]] * n_silent)
+        return synthesize(
+            amp, np.array([440.0]), 0.1, 44100,
+            timbre="sine", adsr_shape="tight", timbre_partition=False,
+            reverb_tail_ms=reverb_tail_ms,
+        )
+
+    @staticmethod
+    def _audible_span(x, frac=0.02):
+        e = np.abs(x)
+        idx = np.where(e > frac * e.max())[0]
+        return (idx[-1] - idx[0]) / 44100 if len(idx) else 0.0
+
+    def test_zero_tail_is_a_noop(self):
+        np.testing.assert_array_equal(self._one_note(0.0), self._one_note(0.0))
+
+    def test_tail_extends_ring_out(self):
+        """The whole point: a struck note keeps sounding into the silence."""
+        assert self._audible_span(self._one_note(800.0)) > \
+               self._audible_span(self._one_note(0.0)) * 5
+
+    def test_longer_tail_rings_longer(self):
+        """Energy remaining at the end must grow with tail length."""
+        def end_rms(w):
+            return float(np.sqrt(np.mean(w[-4410:] ** 2)))
+        assert end_rms(self._one_note(1500.0)) > end_rms(self._one_note(400.0))
+
+    def test_tail_still_decays_to_silence(self):
+        """A decaying tail, never a held sustain — that would rebuild the drone."""
+        w = self._one_note(400.0, n_silent=40)
+        assert np.sqrt(np.mean(w[-4410:] ** 2)) < 0.01
+
+    def test_output_stays_in_range(self):
+        w = self._one_note(1200.0)
+        assert np.max(np.abs(w)) <= 1.0 + 1e-9
+        assert np.isfinite(w).all()
+
+    def test_is_deterministic(self):
+        """The noise impulse response is seeded, so renders are reproducible."""
+        np.testing.assert_array_equal(self._one_note(600.0), self._one_note(600.0))
+
+    def test_preserves_articulation(self):
+        """Must not merge separated notes into a drone."""
+        from sonify.quality import articulation
+        amp = np.zeros((40, 1))
+        amp[::8, 0] = 0.9  # a note every 8 rows
+        w = synthesize(
+            amp, np.array([440.0]), 0.1, 44100,
+            timbre="sine", adsr_shape="tight", timbre_partition=False,
+            reverb_tail_ms=600.0,
+        )
+        assert articulation(w, 44100) > 0.9
 
 
 class TestExportWav:

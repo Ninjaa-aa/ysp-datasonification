@@ -1,10 +1,23 @@
 __pycache__/
 *.pyc
-outputs/*.wav
 .venv/
-
-# Presentation and dependencies
 node_modules/
+
+# Test / tooling caches
+.pytest_cache/
+
+# Generated audio and video — regenerate with scripts/run_sonify.py.
+# These were previously committed and grew .git to 87 MB; history was purged.
+outputs/*.wav
+outputs/*.mp4
+outputs/*.avi
+
+# Generated deliverables and exports
 outputs/*.jpg
 outputs/*.pdf
 outputs/*.pptx
+outputs/*.tiff
+outputs/for_malaska/
+
+# NOTE: outputs/spectrogram_*.png and diagnostics/outputs/*.png are
+# deliberately tracked (4.5 MB) — scripts/build_presentation.js embeds them.
