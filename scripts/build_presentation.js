@@ -38,7 +38,7 @@ slide1.addShape(pres.ShapeType.rect, {
   fill: { color: GLACIER },
 });
 
-slide1.addText("Weekly Progress — July 17–23, 2025", {
+slide1.addText("Weekly Progress — July 2026", {
   x: 0.8, y: 3.75, w: 8, h: 0.5,
   fontSize: 20, fontFace: "Arial", color: GLACIER,
 });
@@ -297,7 +297,7 @@ slide4.addText("VERIFICATION", {
 slide4.addText(
   "Mean amplitude:\n  0.94 → 0.51\n\n" +
   "Near-zero values:\n  3.1% → matching raw data\n\n" +
-  "Tests: 80/80 passing",
+  "Tests: 183/183 passing",
   {
     x: 6.75, y: 3.35, w: 2.7, h: 1.2,
     fontSize: 10, fontFace: "Arial", color: DIM_WHITE, valign: "top",
@@ -409,8 +409,8 @@ slide6.addText("WHAT'S NEXT", {
 const nextSteps = [
   {
     num: "01",
-    title: "Tone sustain / tail-out feature",
-    body: "Have each tone sustain and tail into the next row to prevent abrupt silences — as Dr. Malaska suggested.",
+    title: "Review event-driven output with Dr. Malaska",
+    body: "New --preset event uses his threshold study and lambda-max pitch. A/B renders at thresholds 400/600/900 are ready for him to pick a default.",
   },
   {
     num: "02",

@@ -723,7 +723,10 @@ def main() -> None:
     # ── 15. Synthesize ────────────────────────────────────────────────────
     seconds_per_row = 1.0 / config.playback_speed
     duration_s = len(matrix) * seconds_per_row
-    partition_str = "partition" if config.timbre_partition else f"timbre={config.timbre}"
+    # Partitioning needs at least 3 channels to split into 3 spectral groups,
+    # so report what will actually happen rather than what was requested.
+    partition_active = config.timbre_partition and matrix.shape[1] >= 3
+    partition_str = "partition" if partition_active else f"timbre={config.timbre}"
     log("SYNTH", f"Synthesizing {len(matrix)} rows at {config.playback_speed} "
         f"rows/sec -> {duration_s:.1f}s audio "
         f"(adsr={config.adsr_shape}, {partition_str})")

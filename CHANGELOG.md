@@ -27,6 +27,9 @@ mapping, and objective regression guards for the sound.
 - `docs/frequency_investigation.md` — answers Dr. Malaska's question about
   sonified frequencies absent from the source data.
 - `docs/roadmap.md` — status against every plan phase, including blocked items.
+- `tests/test_config.py` — `SonificationConfig.validate()` had no test file at
+  all, despite gating every CLI input. Covers the trigger and reverb rules added
+  here plus the pre-existing range checks.
 
 ### Fixed
 
@@ -69,9 +72,10 @@ mapping, and objective regression guards for the sound.
 
 ### Repository
 
-- Generated audio/video purged from git history (87 MB → ~10 MB). Spectrograms
+- Generated audio/video purged from git history (87 MB → 12 MB). Spectrograms
   under `outputs/` and `diagnostics/outputs/` are deliberately kept: the
-  presentation build embeds them.
+  presentation build embeds them, so the floor is the 3.2 MB source dataset plus
+  ~5 MB of referenced figures.
 - Dr. Malaska's threshold spreadsheet committed under `data/threshold/` as the
   provenance for the trigger defaults.
 

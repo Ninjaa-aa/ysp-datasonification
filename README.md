@@ -211,7 +211,7 @@ scripts/
   run_sonify.py      # CLI entry point with structured logging
   analyze_audio.py   # Quality metrics + spectrograms for any WAV
 docs/                # Investigations and design notes
-tests/               # 152 unit tests
+tests/               # 183 unit tests
 data/raw/            # Raw datasets
 data/reference/      # Wavelength reference table
 outputs/             # Generated .wav and .mp4 files
