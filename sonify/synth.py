@@ -32,15 +32,26 @@ _CHIME_RATIOS = np.array([1.0, 2.756])
 _CHIME_WEIGHTS = np.array([1.00, 0.35])
 _CHIME_NORM = float(_CHIME_WEIGHTS.sum())  # 1.35
 
+# Soft: fundamental plus a quiet octave.  Bell's loud 2x/3x/4x harmonics land
+# within 55-75 Hz of *other* channels' fundamentals (e.g. 550 Hz against 495 Hz),
+# which is the peak of the Plomp-Levelt roughness curve and accounted for 66% of
+# the toolkit's measured dissonance.  An octave at 0.15 adds warmth without
+# putting significant energy in a neighbour's critical band.
+_SOFT_RATIOS = np.array([1.0, 2.0])
+_SOFT_WEIGHTS = np.array([1.00, 0.15])
+_SOFT_NORM = float(_SOFT_WEIGHTS.sum())  # 1.15
+
 # Number of partials per timbre (for phase tracking)
 _N_PARTIALS = {
     "sine": 1,
+    "soft": len(_SOFT_RATIOS),
     "bell": len(_BELL_RATIOS),
     "chime": len(_CHIME_RATIOS),
 }
 
 # Timbre properties lookup: (ratios, weights, norm, n_partials)
 _TIMBRE_PROPS = {
+    "soft":  (_SOFT_RATIOS, _SOFT_WEIGHTS, _SOFT_NORM, len(_SOFT_RATIOS)),
     "bell":  (_BELL_RATIOS, _BELL_WEIGHTS, _BELL_NORM, len(_BELL_RATIOS)),
     "chime": (_CHIME_RATIOS, _CHIME_WEIGHTS, _CHIME_NORM, len(_CHIME_RATIOS)),
 }
@@ -58,8 +69,13 @@ ADSR_SHAPES = {
 }
 
 # Timbral partition assignments: group -> (timbre, adsr_shape)
+# The low group uses `soft` rather than `bell`: in the low register its loud
+# 2x/3x/4x harmonics fell inside the critical bands of higher channels'
+# fundamentals, which is where most of the harshness came from.  The mid group
+# keeps the inharmonic `chime` partial — that is only 9% of the dissonance and
+# is the tubular-bell character the project is aiming for.
 _PARTITION_GROUPS = {
-    0: ("bell",  "natural"),  # deep UV / low bands
+    0: ("soft",  "natural"),  # deep UV / low bands
     1: ("chime", "tight"),    # mid UV / middle bands
     2: ("sine",  "slow"),     # near UV / high bands
 }
@@ -147,77 +163,6 @@ def generate_adsr_envelope(
     return envelope[:segment_samples]
 
 
-def apply_reverb_tail(
-    waveform: np.ndarray,
-    sample_rate: int,
-    tail_ms: float,
-    mix: float = 0.35,
-) -> np.ndarray:
-    """Add an exponentially decaying tail so notes ring out instead of stopping dead.
-
-    This is Dr. Malaska's "add a sustain component?" request (2026-07-09), and
-    it matters most in event-driven mode where chimes can be 5-20 s apart —
-    a tail carries each strike into the silence the way a real chime does.
-
-    Deliberately implemented as a *decaying* tail rather than a held sustain
-    level: a held sustain merges consecutive notes into a drone, which is the
-    exact failure this project already hit once.  Because the tail decays to
-    zero, note articulation is preserved.
-
-    Parameters
-    ----------
-    waveform : np.ndarray
-        1-D mono waveform.
-    sample_rate : int
-        Audio sample rate.
-    tail_ms : float
-        Decay time constant in milliseconds.  ``<= 0`` returns a copy
-        unchanged.
-    mix : float
-        Wet/dry blend in [0, 1].  The tail is added at this level relative to
-        the dry signal.
-
-    Returns
-    -------
-    np.ndarray
-        Waveform with the tail applied, peak-normalized to [-1, 1].
-    """
-    if tail_ms <= 0 or mix <= 0 or len(waveform) < 2:
-        return waveform.copy()
-
-    from scipy.signal import fftconvolve
-
-    tau_samples = tail_ms / 1000.0 * sample_rate
-    ir_len = int(min(3 * tau_samples, len(waveform)))
-    if ir_len < 2:
-        return waveform.copy()
-
-    # Impulse response: exponentially decaying noise.  Noise (rather than a
-    # bare exponential) is what makes this a reverb tail instead of a
-    # lowpass filter — a smooth one-pole decay applied to the waveform has a
-    # sub-hertz cutoff and simply erases the audio.  Seeded so renders are
-    # reproducible.
-    rng = np.random.default_rng(0)
-    t = np.arange(ir_len, dtype=np.float64)
-    ir = rng.normal(0.0, 1.0, ir_len) * np.exp(-t / tau_samples)
-    ir /= np.sqrt(np.sum(ir ** 2))  # unit energy, so `mix` means what it says
-
-    # FFT convolution: O(n log n).  Direct convolution here would be
-    # O(n * ir_len) — ~10^12 operations for a 160 s render with a 1.2 s tail.
-    wet = fftconvolve(waveform, ir, mode="full")[: len(waveform)]
-
-    wet_peak = np.max(np.abs(wet))
-    if wet_peak > 0:
-        wet *= np.max(np.abs(waveform)) / wet_peak  # match dry level before mixing
-
-    out = waveform + mix * wet
-
-    peak = np.max(np.abs(out))
-    if peak > 0:
-        out /= peak
-    return out
-
-
 def synthesize(
     amplitude_matrix: np.ndarray,
     freqs: np.ndarray,
@@ -227,7 +172,6 @@ def synthesize(
     timbre: str = "sine",
     adsr_shape: str = "natural",
     timbre_partition: bool = True,
-    reverb_tail_ms: float = 0.0,
 ) -> np.ndarray:
     """Phase-continuous additive synthesis with ADSR envelopes.
 
@@ -413,9 +357,5 @@ def synthesize(
     peak = np.max(np.abs(waveform))
     if peak > 0:
         waveform /= peak
-
-    # Reverb tail (applied last so it decays into the silence between notes)
-    if reverb_tail_ms > 0:
-        waveform = apply_reverb_tail(waveform, sample_rate, reverb_tail_ms)
 
     return waveform
