@@ -600,6 +600,127 @@ def apply_intensity_column(
 
 
 # ---------------------------------------------------------------------------
+# Voice limiting
+# ---------------------------------------------------------------------------
+
+def limit_voices(matrix: np.ndarray, max_voices: int | None) -> np.ndarray:
+    """Keep only the loudest ``max_voices`` channels in each row, silence the rest.
+
+    Sounding every channel at once is the single largest source of harshness in
+    this toolkit.  Measured on the borehole dataset, 74% of rows sounded five or
+    more voices and 23.8% sounded all eight — a permanent cluster chord of ~20
+    partials.  A real wind chime strikes one tube at a time; the harshness comes
+    from partials of one channel beating against the *fundamentals* of another
+    (e.g. a 550 Hz overtone sitting 55 Hz from a 495 Hz fundamental, which is
+    the peak of the Plomp-Levelt roughness curve).
+
+    Restricting to the three loudest voices cuts Sethares sensory dissonance by
+    ~89% while still retaining ~64% of per-row amplitude, and the identity of
+    the loudest channel varies across all channels, so the dominant-band
+    information survives.
+
+    Parameters
+    ----------
+    matrix : np.ndarray
+        2-D amplitude array ``(n_rows, n_channels)``, post gain normalization.
+    max_voices : int or None
+        Maximum simultaneous channels per row.  ``None`` or a value at least as
+        large as the channel count disables limiting.
+
+    Returns
+    -------
+    np.ndarray
+        Copy of the matrix with quieter channels zeroed per row.  Never mutates
+        the input.
+
+    Raises
+    ------
+    ValueError
+        If ``max_voices`` is less than 1.
+    """
+    if max_voices is None:
+        return matrix.copy()
+    if max_voices < 1:
+        raise ValueError(f"max_voices must be >= 1, got {max_voices}")
+
+    n_channels = matrix.shape[1]
+    if max_voices >= n_channels:
+        return matrix.copy()
+
+    result = matrix.copy()
+    # argpartition puts the (n_channels - max_voices) smallest values first, so
+    # everything left of the split is a channel to silence.  Ties resolve by
+    # channel index, which keeps output deterministic.
+    cut = n_channels - max_voices
+    quietest = np.argpartition(result, cut - 1, axis=1)[:, :cut]
+    np.put_along_axis(result, quietest, 0.0, axis=1)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Note tail (Dr. Malaska's "sustain component")
+# ---------------------------------------------------------------------------
+
+def apply_envelope_tail(
+    matrix: np.ndarray,
+    seconds_per_row: float,
+    tail_ms: float,
+    return_sources: bool = False,
+):
+    """Let each row's amplitude decay forward into the rows that follow.
+
+    Implements Dr. Malaska's 2026-07-09 request that "each tone sustain and tail
+    into the next row".  Because it shapes the *amplitude envelope*, the same
+    oscillator simply keeps ringing and decaying — the tail is pitched and adds
+    no new spectral content.
+
+    This replaced an earlier convolution reverb built on a decaying-noise
+    impulse response.  That is a *room* model, not a sustain: it smeared every
+    note across the spectrum and measured 1.80 roughness against 0.71 for this
+    approach on the same material, with worse note articulation (0.93 vs 0.97).
+
+    Parameters
+    ----------
+    matrix : np.ndarray
+        2-D amplitude array ``(n_rows, n_channels)``.
+    seconds_per_row : float
+        Row duration, i.e. ``1 / playback_speed``.
+    tail_ms : float
+        Decay time constant in milliseconds.  ``<= 0`` returns a copy unchanged.
+    return_sources : bool
+        Also return, for each cell, the index of the row whose strike is being
+        held.  Required when frequencies vary per row (``--tone-source
+        lambda_max``): the tail must keep sounding the *pitch of the note that
+        started it*, otherwise it holds the amplitude while the pitch jumps
+        row to row, smearing separate events into one another.
+
+    Returns
+    -------
+    np.ndarray or tuple[np.ndarray, np.ndarray]
+        Copy with each channel's amplitude decaying forward.  A row keeps its
+        own value whenever that is louder than the decaying tail, so genuine
+        new strikes always cut through.  With ``return_sources=True``, also
+        returns an int array of originating row indices.
+    """
+    result = matrix.copy()
+    sources = np.tile(
+        np.arange(matrix.shape[0])[:, np.newaxis], (1, matrix.shape[1])
+    )
+
+    if tail_ms <= 0:
+        return (result, sources) if return_sources else result
+
+    decay_per_row = float(np.exp(-seconds_per_row / (tail_ms / 1000.0)))
+    for row in range(1, result.shape[0]):
+        decayed = result[row - 1] * decay_per_row
+        held = decayed > result[row]
+        result[row] = np.where(held, decayed, result[row])
+        sources[row] = np.where(held, sources[row - 1], sources[row])
+
+    return (result, sources) if return_sources else result
+
+
+# ---------------------------------------------------------------------------
 # Temporal amplitude smoothing (Sound Quality update)
 # ---------------------------------------------------------------------------
 
