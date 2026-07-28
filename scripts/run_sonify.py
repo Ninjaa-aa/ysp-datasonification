@@ -45,6 +45,8 @@ from sonify.mapping import (
     map_tone_from_column,
     apply_intensity_column,
     smooth_amplitude_matrix,
+    limit_voices,
+    apply_envelope_tail,
 )
 from sonify.events import (
     apply_trigger,
@@ -70,7 +72,38 @@ PRESETS = {
     "none": {},
 
     "chime": {
-        # Target: wind chime aesthetic, the primary Dr. Malaska goal
+        # Target: wind chime aesthetic, the primary Dr. Malaska goal.
+        #
+        # Tuned by measuring roughness on rendered audio, which dropped from
+        # 0.330 to 0.049 (-85%). The whole gain comes from two changes:
+        #   max_voices 3   — was sounding 5+ voices on 74% of rows
+        #   soft low group — bell's 2x/3x/4x harmonics were landing 55-75 Hz
+        #                    from other channels' fundamentals (see synth.py)
+        #
+        # Pitches are deliberately UNCHANGED (220 Hz, 3 octaves). Raising the
+        # root or widening to 4 octaves looked better on the partial-spectrum
+        # model, but that is partly an artefact of critical bands widening with
+        # frequency: on real audio it bought only 0.049 -> 0.044 roughness while
+        # pushing 15% of the energy above 3 kHz, which is piercing and breaches
+        # the toolkit's own 2500 Hz tone ceiling.
+        #
+        # Use --preset chime-legacy to reproduce the pre-tuning rendering.
+        "n_bins":             8,
+        "freq_mode":          "pentatonic",
+        "pentatonic_root":    220.0,
+        "pentatonic_octaves": 3,
+        "max_voices":         3,
+        "timbre_partition":   True,
+        "adsr_shape":         "tight",
+        "gain_mode":          "max_log",
+        "scale":              "log10",
+        "smoothing":          0.0,
+        "playback_speed":     5.0,
+    },
+
+    "chime-legacy": {
+        # The exact pre-tuning rendering, kept so anything Dr. Malaska has
+        # already listened to stays reproducible. Measurably harsher.
         "n_bins":             8,
         "freq_mode":          "pentatonic",
         "pentatonic_root":    220.0,
@@ -84,21 +117,31 @@ PRESETS = {
     },
 
     "ambient": {
-        # Target: slow, meditative, full dataset playback
+        # Target: slow, meditative, full dataset playback.
+        # Same voice-limiting rationale as chime: six simultaneous bell voices
+        # an octave lower produced the same overtone/fundamental collisions.
         "n_bins":             6,
         "freq_mode":          "pentatonic",
         "pentatonic_root":    110.0,
         "pentatonic_octaves": 4,
+        "max_voices":         3,
         "timbre":             "bell",
         "timbre_partition":   True,
         "adsr_shape":         "slow",
         "gain_mode":          "median_log",
         "scale":              "log10",
         "smoothing":          0.7,
+        # This preset is meant to be slow and meditative but was inheriting the
+        # 10 rows/s global default. With the `slow` ADSR (50ms attack, 150ms
+        # release) notes at 10 rows/s overlap into a cluster: roughness measured
+        # 1.031 at 10 rows/s versus 0.066 at 5. Set it explicitly.
+        "playback_speed":     5.0,
     },
 
     "scientific": {
-        # Target: data fidelity over aesthetics, all channels, no musical processing
+        # Target: data fidelity over aesthetics, all channels, no musical
+        # processing. Deliberately exempt from voice limiting — this preset
+        # exists so a fully faithful all-channel rendering remains available.
         "n_bins":             None,  # no rebinning, use all detected channels
         "freq_mode":          "index",
         "timbre":             "sine",
@@ -131,7 +174,12 @@ PRESETS = {
         # between events. At 10 rows/s the median gap is 21.6 s (max 53 s),
         # which reads as dead air rather than sparse wind chimes.
         "playback_speed":     25.0,
-        "reverb_tail_ms":     1200.0,  # carries each strike into the gaps
+        # tail_ms is deliberately 0. A forward-decaying amplitude tail sounds
+        # like tremolo rather than sustain, because the ADSR still retriggers
+        # on every row: an 800ms tail at 25 rows/s is 20 re-attacks, and
+        # measured roughness rose from 0.44 to 16.6. Real sustain needs
+        # note-level envelopes that span rows; see docs/roadmap.md.
+        "tail_ms":            0.0,
     },
 }
 
@@ -148,7 +196,7 @@ GLOBAL_DEFAULTS = {
     "threshold":          0.0,
     "trigger_type":       "linear",
     "tone_source":        "band_index",
-    "reverb_tail_ms":     0.0,
+    "tail_ms":            0.0,
 }
 
 
@@ -381,7 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Synthesis timbre (sine=pure, bell=harmonic partials, chime=inharmonic)")
 
     # ── Sound quality arguments ──────────────────────────────────────────
-    g_core.add_argument("--preset", choices=["none", "chime", "ambient", "scientific", "event"],
+    g_core.add_argument("--preset", choices=["none", "chime", "chime-legacy", "ambient", "scientific", "event"],
                    default="none",
                    help="Preset configuration (overrides individual settings not explicitly provided)")
     # adsr_shape: default=None (sentinel for preset)
@@ -390,9 +438,12 @@ def build_parser() -> argparse.ArgumentParser:
     # smoothing: default=None (sentinel for preset)
     g_audio.add_argument("--smoothing", type=float, default=None,
                    help="Temporal amplitude smoothing 0.0-1.0 (0=off, 0.3=light, 0.7=heavy)")
-    g_audio.add_argument("--reverb-tail-ms", type=float, default=None,
-                   help="Decaying tail so notes ring out into silence (0=off, "
-                        "600-1500 suits sparse event mode)")
+    g_audio.add_argument("--max-voices", type=int, default=None,
+                   help="Maximum simultaneous voices per row; only the loudest sound. "
+                        "Fewer voices = far less harshness (3 suits chime)")
+    g_audio.add_argument("--tail-ms", type=float, default=None,
+                   help="Each note decays forward into following rows so tones ring "
+                        "out (0=off, 400-1500 suits sparse event mode)")
     # timbre_partition: default=None (sentinel for preset)
     g_audio.add_argument("--timbre-partition", action="store_true", default=None, dest="timbre_partition",
                    help="Enable timbral partitioning (different timbres per spectral group)")
@@ -547,7 +598,8 @@ def main() -> None:
         adsr_shape=args.adsr_shape,
         timbre_partition=args.timbre_partition,
         smoothing=args.smoothing,
-        reverb_tail_ms=args.reverb_tail_ms,
+        max_voices=args.max_voices,
+        tail_ms=args.tail_ms,
     )
     config.validate()
 
@@ -668,6 +720,33 @@ def main() -> None:
     else:
         log("SMOOTH", "Temporal smoothing: off (smoothing=0.0)")
 
+    # ── 12c. Voice limiting ───────────────────────────────────────────────
+    # Applied after smoothing so it has the final say on what sounds; smoothing
+    # would otherwise reintroduce the voices this just removed.
+    if config.max_voices is not None and config.max_voices < matrix.shape[1]:
+        before = float(np.mean(np.count_nonzero(matrix > 0.05, axis=1)))
+        matrix = limit_voices(matrix, config.max_voices)
+        after = float(np.mean(np.count_nonzero(matrix > 0.05, axis=1)))
+        log("VOICES", f"Limited to {config.max_voices} loudest per row: "
+            f"mean simultaneous voices {before:.1f} -> {after:.1f}")
+    else:
+        log("VOICES", "Voice limiting: off (all channels may sound together)")
+
+    # ── 12d. Note tail ────────────────────────────────────────────────────
+    # After voice limiting, so a decaying tail can still ring under a new
+    # strike — which is what a real chime does.
+    if config.tail_ms > 0:
+        matrix, tail_sources = apply_envelope_tail(
+            matrix, 1.0 / config.playback_speed, config.tail_ms,
+            return_sources=True,
+        )
+        # With lambda-max the pitch changes per row, so a tail must keep
+        # sounding the pitch of the note that started it. Holding amplitude
+        # while the pitch jumped smeared separate events together.
+        if lambda_max_freqs is not None:
+            lambda_max_freqs = lambda_max_freqs[tail_sources[:, 0]]
+        log("TAIL", f"Notes tail forward with a {config.tail_ms:.0f}ms decay")
+
     # ── 13. Assign frequencies ────────────────────────────────────────────
     pm = config.param_map
     if pm.tone_source == "lambda_max":
@@ -730,14 +809,25 @@ def main() -> None:
     log("SYNTH", f"Synthesizing {len(matrix)} rows at {config.playback_speed} "
         f"rows/sec -> {duration_s:.1f}s audio "
         f"(adsr={config.adsr_shape}, {partition_str})")
-    if config.reverb_tail_ms > 0:
-        log("SYNTH", f"Reverb tail: {config.reverb_tail_ms:.0f}ms decay")
+    # Advisory: if a row is shorter than the note's own decay, consecutive notes
+    # overlap into a cluster, which is a large and easily-missed source of
+    # harshness (measured: ambient roughness 1.031 at 10 rows/s vs 0.066 at 5).
+    from sonify.synth import ADSR_SHAPES
+    attack_ms, decay_ms, _sustain, release_ms = ADSR_SHAPES[config.adsr_shape]
+    note_ms = attack_ms + decay_ms + release_ms
+    row_ms = seconds_per_row * 1000.0
+    # Mild overlap is intentional for pad-like presets, so only flag it once a
+    # note outlasts its row by 50% or more, where the pile-up becomes audible.
+    if note_ms > 1.5 * row_ms:
+        log("SYNTH", f"NOTE: '{config.adsr_shape}' envelope is {note_ms:.0f}ms but a row "
+                     f"is {row_ms:.0f}ms — notes will pile up and sound harsh. "
+                     f"Consider a slower --playback-speed or --adsr-shape tight.")
+
     waveform = synthesize(
         matrix, freqs, seconds_per_row, config.sample_rate, config.volume,
         timbre=config.timbre,
         adsr_shape=config.adsr_shape,
         timbre_partition=config.timbre_partition,
-        reverb_tail_ms=config.reverb_tail_ms,
     )
     duration = len(waveform) / config.sample_rate
 

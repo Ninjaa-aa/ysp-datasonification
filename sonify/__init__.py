@@ -32,10 +32,12 @@ from sonify.mapping import (
     snap_to_scale,
     load_wavelength_table,
     smooth_amplitude_matrix,
+    limit_voices,
+    apply_envelope_tail,
     PENTATONIC_RATIOS,
 )
 from sonify.synth import (
-    synthesize, generate_adsr_envelope, apply_reverb_tail, ADSR_SHAPES,
+    synthesize, generate_adsr_envelope, ADSR_SHAPES,
 )
 from sonify.playback import play
 from sonify.export import export_wav
@@ -60,10 +62,11 @@ __all__ = [
     "snap_to_scale",
     "load_wavelength_table",
     "smooth_amplitude_matrix",
+    "limit_voices",
+    "apply_envelope_tail",
     "PENTATONIC_RATIOS",
     "synthesize",
     "generate_adsr_envelope",
-    "apply_reverb_tail",
     "ADSR_SHAPES",
     "apply_trigger",
     "row_trigger_mask",

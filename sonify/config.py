@@ -97,10 +97,14 @@ class SonificationConfig:
     adsr_shape: Literal["tight", "natural", "slow"] = "natural"
     timbre_partition: bool = True    # split channels into spectral groups
     smoothing: float = 0.3           # temporal amplitude smoothing (0=off, 1=max)
-    # Decaying tail so notes ring out into silence (Dr. Malaska's "sustain"
-    # request). Decays to zero by design — a held sustain would merge notes
-    # into a drone.
-    reverb_tail_ms: float = 0.0
+    # Maximum simultaneous voices per row. Sounding every channel at once is the
+    # largest source of harshness: partials of one channel beat against the
+    # fundamentals of another. None = unlimited (full spectral fidelity).
+    max_voices: Optional[int] = None
+    # Each note's amplitude decays forward into following rows, so tones ring
+    # out and tail into the next row (Dr. Malaska's "sustain" request). Pitched
+    # and decaying by design: a held sustain would merge notes into a drone.
+    tail_ms: float = 0.0
 
     def validate(self) -> None:
         """Validate all parameters, raising ValueError on bad input."""
@@ -282,7 +286,10 @@ class SonificationConfig:
                 f"smoothing must be in [0.0, 1.0], got {self.smoothing}"
             )
 
-        if self.reverb_tail_ms < 0:
+        if self.tail_ms < 0:
+            raise ValueError(f"tail_ms must be >= 0, got {self.tail_ms}")
+
+        if self.max_voices is not None and self.max_voices < 1:
             raise ValueError(
-                f"reverb_tail_ms must be >= 0, got {self.reverb_tail_ms}"
+                f"max_voices must be >= 1, got {self.max_voices}"
             )
