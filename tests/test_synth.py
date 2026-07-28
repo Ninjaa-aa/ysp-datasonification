@@ -207,12 +207,19 @@ class TestSynthesisGoldenValues:
     """
 
     GOLDEN = {
-        # name: (rms, sum) for a fixed seed
+        # name: (rms, sum) for a fixed seed.
+        #
+        # The three non-partitioned cases are unchanged since the values were
+        # first captured, which is the point: they prove the synthesis core
+        # itself has not drifted through vectorization or any later work.
         "sine_nopart": (0.120091147515, -4.542508032),
         "bell_nopart": (0.061508490442, -5.043565150),
         "chime_nopart": (0.091996831024, -3.313643152),
-        "partition8": (0.118439501753, -2.527826331),
-        "partition32": (0.067595229480, -0.904257157),
+        # Regenerated deliberately when the partition table's low group moved
+        # from `bell` to `soft` to cut harshness (see CHANGELOG v1.1). Only the
+        # partitioned cases moved, confirming the change was scoped correctly.
+        "partition8": (0.124701040130, -3.468574135),
+        "partition32": (0.069883257374, -1.198170740),
     }
 
     SPECS = {
@@ -260,66 +267,6 @@ class TestSynthesisGoldenValues:
                        timbre_partition=False, adsr_shape="natural")
         assert np.isfinite(w).all()
         assert np.max(np.abs(w)) <= 1.0 + 1e-9
-
-
-class TestReverbTail:
-    """Dr. Malaska's 'add a sustain component?' request, as a decaying tail."""
-
-    @staticmethod
-    def _one_note(reverb_tail_ms=0.0, n_silent=9):
-        """A single struck note followed by silent rows."""
-        amp = np.array([[0.9]] + [[0.0]] * n_silent)
-        return synthesize(
-            amp, np.array([440.0]), 0.1, 44100,
-            timbre="sine", adsr_shape="tight", timbre_partition=False,
-            reverb_tail_ms=reverb_tail_ms,
-        )
-
-    @staticmethod
-    def _audible_span(x, frac=0.02):
-        e = np.abs(x)
-        idx = np.where(e > frac * e.max())[0]
-        return (idx[-1] - idx[0]) / 44100 if len(idx) else 0.0
-
-    def test_zero_tail_is_a_noop(self):
-        np.testing.assert_array_equal(self._one_note(0.0), self._one_note(0.0))
-
-    def test_tail_extends_ring_out(self):
-        """The whole point: a struck note keeps sounding into the silence."""
-        assert self._audible_span(self._one_note(800.0)) > \
-               self._audible_span(self._one_note(0.0)) * 5
-
-    def test_longer_tail_rings_longer(self):
-        """Energy remaining at the end must grow with tail length."""
-        def end_rms(w):
-            return float(np.sqrt(np.mean(w[-4410:] ** 2)))
-        assert end_rms(self._one_note(1500.0)) > end_rms(self._one_note(400.0))
-
-    def test_tail_still_decays_to_silence(self):
-        """A decaying tail, never a held sustain — that would rebuild the drone."""
-        w = self._one_note(400.0, n_silent=40)
-        assert np.sqrt(np.mean(w[-4410:] ** 2)) < 0.01
-
-    def test_output_stays_in_range(self):
-        w = self._one_note(1200.0)
-        assert np.max(np.abs(w)) <= 1.0 + 1e-9
-        assert np.isfinite(w).all()
-
-    def test_is_deterministic(self):
-        """The noise impulse response is seeded, so renders are reproducible."""
-        np.testing.assert_array_equal(self._one_note(600.0), self._one_note(600.0))
-
-    def test_preserves_articulation(self):
-        """Must not merge separated notes into a drone."""
-        from sonify.quality import articulation
-        amp = np.zeros((40, 1))
-        amp[::8, 0] = 0.9  # a note every 8 rows
-        w = synthesize(
-            amp, np.array([440.0]), 0.1, 44100,
-            timbre="sine", adsr_shape="tight", timbre_partition=False,
-            reverb_tail_ms=600.0,
-        )
-        assert articulation(w, 44100) > 0.9
 
 
 class TestExportWav:

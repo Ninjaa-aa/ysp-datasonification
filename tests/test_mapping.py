@@ -81,6 +81,119 @@ class TestNormalizePerChannel:
         np.testing.assert_array_almost_equal(result[1], [1.0, 1.0])
 
 
+class TestLimitVoices:
+    """Per-row voice limiting — the main fix for simultaneous-cluster harshness."""
+
+    M = np.array([[0.1, 0.9, 0.5, 0.3],
+                  [0.8, 0.2, 0.7, 0.6]])
+
+    def test_keeps_only_the_loudest(self):
+        from sonify.mapping import limit_voices
+        np.testing.assert_array_equal(
+            limit_voices(self.M, 2), [[0.0, 0.9, 0.5, 0.0], [0.8, 0.0, 0.7, 0.0]]
+        )
+
+    def test_single_voice_keeps_row_maximum(self):
+        from sonify.mapping import limit_voices
+        out = limit_voices(self.M, 1)
+        assert np.count_nonzero(out, axis=1).tolist() == [1, 1]
+        np.testing.assert_array_equal(out.max(axis=1), self.M.max(axis=1))
+
+    def test_none_disables_limiting(self):
+        from sonify.mapping import limit_voices
+        out = limit_voices(self.M, None)
+        np.testing.assert_array_equal(out, self.M)
+        assert out is not self.M
+
+    def test_cap_at_or_above_channel_count_is_a_noop(self):
+        from sonify.mapping import limit_voices
+        np.testing.assert_array_equal(limit_voices(self.M, 4), self.M)
+        np.testing.assert_array_equal(limit_voices(self.M, 99), self.M)
+
+    def test_does_not_mutate_input(self):
+        from sonify.mapping import limit_voices
+        before = self.M.copy()
+        limit_voices(self.M, 2)
+        np.testing.assert_array_equal(self.M, before)
+
+    def test_zero_or_negative_raises(self):
+        from sonify.mapping import limit_voices
+        with pytest.raises(ValueError, match="max_voices"):
+            limit_voices(self.M, 0)
+
+    def test_ties_are_deterministic(self):
+        from sonify.mapping import limit_voices
+        tied = np.array([[0.5, 0.5, 0.5, 0.5]])
+        np.testing.assert_array_equal(limit_voices(tied, 2), limit_voices(tied, 2))
+
+    def test_silent_row_stays_silent(self):
+        from sonify.mapping import limit_voices
+        silent = np.zeros((1, 4))
+        np.testing.assert_array_equal(limit_voices(silent, 2), silent)
+
+
+class TestEnvelopeTail:
+    """Dr. Malaska's 'each tone sustain and tail into the next row'.
+
+    Replaced an earlier convolution reverb built on a decaying-noise impulse
+    response: that is a *room* model, which smeared every note across the
+    spectrum (roughness 1.80 vs 0.71 for this approach on the same material).
+    """
+
+    def test_zero_tail_is_a_noop(self):
+        from sonify.mapping import apply_envelope_tail
+        m = np.array([[1.0, 0.0], [0.0, 0.0]])
+        out = apply_envelope_tail(m, 0.1, 0.0)
+        np.testing.assert_array_equal(out, m)
+        assert out is not m
+
+    def test_amplitude_decays_forward(self):
+        from sonify.mapping import apply_envelope_tail
+        m = np.array([[1.0], [0.0], [0.0], [0.0]])
+        out = apply_envelope_tail(m, 0.1, 200.0)
+        assert out[0, 0] == 1.0
+        assert out[1, 0] > out[2, 0] > out[3, 0] > 0.0
+
+    def test_longer_tail_decays_more_slowly(self):
+        from sonify.mapping import apply_envelope_tail
+        m = np.array([[1.0], [0.0], [0.0], [0.0]])
+        short = apply_envelope_tail(m, 0.1, 100.0)
+        long_ = apply_envelope_tail(m, 0.1, 1000.0)
+        assert long_[3, 0] > short[3, 0]
+
+    def test_new_strike_cuts_through_the_tail(self):
+        """A genuine new note must never be masked by a decaying one."""
+        from sonify.mapping import apply_envelope_tail
+        m = np.array([[1.0], [0.0], [0.8]])
+        out = apply_envelope_tail(m, 0.1, 500.0)
+        assert out[2, 0] == 0.8
+
+    def test_never_amplifies(self):
+        from sonify.mapping import apply_envelope_tail
+        rng = np.random.default_rng(0)
+        m = rng.random((50, 4))
+        out = apply_envelope_tail(m, 0.1, 400.0)
+        assert out.max() <= m.max() + 1e-12
+
+    def test_silence_stays_silent(self):
+        from sonify.mapping import apply_envelope_tail
+        m = np.zeros((10, 3))
+        np.testing.assert_array_equal(apply_envelope_tail(m, 0.1, 500.0), m)
+
+    def test_does_not_mutate_input(self):
+        from sonify.mapping import apply_envelope_tail
+        m = np.array([[1.0], [0.0]])
+        apply_envelope_tail(m, 0.1, 500.0)
+        np.testing.assert_array_equal(m, [[1.0], [0.0]])
+
+    def test_channels_are_independent(self):
+        from sonify.mapping import apply_envelope_tail
+        m = np.array([[1.0, 0.0], [0.0, 0.0]])
+        out = apply_envelope_tail(m, 0.1, 500.0)
+        assert out[1, 0] > 0.0
+        assert out[1, 1] == 0.0
+
+
 class TestLambdaMax:
     """Phase 3's stated default: tone = lambda max, intensity = volume."""
 

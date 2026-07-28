@@ -43,12 +43,13 @@ class TestCLIHelp:
 
         # Trigger + lambda-max (Dr. Malaska's 2026-07-24 two-function design)
         assert "--threshold" in help_text, "Missing --threshold"
+        assert "--max-voices" in help_text, "Missing --max-voices"
         assert "--trigger-type" in help_text, "Missing --trigger-type"
         assert "--target-tones" in help_text, "Missing --target-tones"
         assert "lambda_max" in help_text, "Missing lambda_max tone source"
 
-        # Sustain, as a decaying tail
-        assert "--reverb-tail-ms" in help_text, "Missing --reverb-tail-ms"
+        # Sustain, as a forward-decaying note tail
+        assert "--tail-ms" in help_text, "Missing --tail-ms"
 
     def test_sustain_flag_is_gone(self):
         """--sustain was never applied; it is removed rather than left misleading."""

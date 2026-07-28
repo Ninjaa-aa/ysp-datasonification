@@ -105,8 +105,9 @@ class TestOtherMetrics:
     def test_describe_returns_all_keys(self):
         m = describe(_pulse_train(), SR)
         assert set(m) == {
-            "duration_s", "peak", "rms", "crest_db", "articulation",
-            "onset_rate", "spectral_flatness", "silence_fraction",
+            "duration_s", "peak", "rms", "crest_db", "roughness",
+            "articulation", "onset_rate", "spectral_flatness",
+            "silence_fraction",
         }
 
 

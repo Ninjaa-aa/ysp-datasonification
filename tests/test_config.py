@@ -49,14 +49,14 @@ class TestTriggerValidation:
         cfg(target_tones=None).validate()
 
 
-class TestReverbTailValidation:
+class TestTailValidation:
     def test_negative_tail_raises(self):
-        with pytest.raises(ValueError, match="reverb_tail_ms"):
-            cfg(reverb_tail_ms=-1.0).validate()
+        with pytest.raises(ValueError, match="tail_ms"):
+            cfg(tail_ms=-1.0).validate()
 
     def test_zero_and_positive_tails_are_valid(self):
-        cfg(reverb_tail_ms=0.0).validate()
-        cfg(reverb_tail_ms=1200.0).validate()
+        cfg(tail_ms=0.0).validate()
+        cfg(tail_ms=800.0).validate()
 
 
 class TestFrequencyValidation:
