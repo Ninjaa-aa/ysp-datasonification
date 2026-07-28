@@ -175,6 +175,143 @@ def mean_amplitude(amplitude_matrix: np.ndarray) -> float:
     return float(np.mean(amplitude_matrix))
 
 
+def polyphony(amplitude_matrix: np.ndarray, threshold: float = 0.05) -> dict[str, float]:
+    """How many voices sound simultaneously.
+
+    Density is the single largest driver of harshness in this toolkit: sounding
+    every channel at once turns the output into a permanent cluster chord, and
+    a real wind chime strikes one tube at a time.  Before voice limiting this
+    dataset sounded 5+ voices on 74% of rows and all eight on 23.8%.
+
+    Parameters
+    ----------
+    amplitude_matrix : np.ndarray
+        2-D array ``(n_rows, n_channels)`` of amplitudes in [0, 1].
+    threshold : float
+        Amplitude above which a channel counts as sounding.
+
+    Returns
+    -------
+    dict[str, float]
+        ``mean``, ``median``, ``max`` simultaneous voices, and ``frac_solo``
+        (fraction of rows sounding exactly one voice).
+    """
+    active = np.count_nonzero(amplitude_matrix > threshold, axis=1)
+    return {
+        "mean": float(np.mean(active)),
+        "median": float(np.median(active)),
+        "max": float(np.max(active)) if active.size else 0.0,
+        "frac_solo": float(np.mean(active == 1)),
+    }
+
+
+def _partial_dissonance(f1: float, f2: float, a1: float, a2: float) -> float:
+    """Plomp-Levelt sensory dissonance between two partials (Sethares' form).
+
+    Peaks when the pair is separated by roughly a quarter of a critical band —
+    around 55-75 Hz in the 400-900 Hz region — and falls to zero for unisons
+    and for wide separations.
+    """
+    if f1 > f2:
+        f1, f2, a1, a2 = f2, f1, a2, a1
+    s = 0.24 / (0.0207 * f1 + 18.96)
+    d = f2 - f1
+    return min(a1, a2) * (np.exp(-3.5 * s * d) - np.exp(-5.75 * s * d))
+
+
+def sensory_dissonance(freqs: np.ndarray, amps: np.ndarray) -> float:
+    """Total Sethares/Plomp-Levelt dissonance of a set of simultaneous partials.
+
+    This is the metric that caught the toolkit's harshness after the rhythmic
+    guards (``articulation``, ``onset_rate``) missed it entirely — those measure
+    whether notes are separated in *time* and say nothing about whether notes
+    sounding *together* clash.
+
+    Calibration on known spectra:
+      - single harmonic tone  ~0.001
+      - major triad           ~0.34
+      - untuned chime preset  ~0.65  (worse than a triad)
+
+    Parameters
+    ----------
+    freqs : np.ndarray
+        1-D partial frequencies in Hz.
+    amps : np.ndarray
+        1-D partial amplitudes, same length.
+
+    Returns
+    -------
+    float
+        Summed pairwise dissonance.  Lower is more consonant.
+    """
+    f = np.asarray(freqs, dtype=np.float64)
+    a = np.asarray(amps, dtype=np.float64)
+    if len(f) != len(a):
+        raise ValueError(f"freqs ({len(f)}) and amps ({len(a)}) must be the same length")
+    return float(sum(
+        _partial_dissonance(f[i], f[j], a[i], a[j])
+        for i in range(len(f)) for j in range(i + 1, len(f))
+    ))
+
+
+def spectral_roughness(
+    waveform: np.ndarray,
+    sample_rate: int,
+    max_frames: int = 100,
+    peak_height: float = 0.08,
+) -> float:
+    """Sensory dissonance measured on rendered audio rather than on a note list.
+
+    Picks spectral peaks per frame and sums their pairwise dissonance, so it
+    catches harshness regardless of where it came from — scale, timbre partials,
+    or too many simultaneous voices.
+
+    Reference values from this project: legacy chime 0.330, tuned chime 0.049.
+
+    Parameters
+    ----------
+    waveform : np.ndarray
+        1-D mono waveform.
+    sample_rate : int
+        Audio sample rate.
+    max_frames : int
+        Number of frames to sample across the file.
+    peak_height : float
+        Peak threshold as a fraction of the frame's loudest bin.
+
+    Returns
+    -------
+    float
+        Mean roughness across sounding frames, or ``nan`` if silent.
+    """
+    from scipy.signal import stft, find_peaks
+
+    x = np.asarray(waveform, dtype=np.float64)
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    if len(x) < 8192:
+        return float("nan")
+
+    f, _, Z = stft(x, fs=sample_rate, nperseg=8192)
+    mag = np.abs(Z)
+    keep = f < 8000
+    f, mag = f[keep], mag[keep]
+
+    idx = np.linspace(0, mag.shape[1] - 1, min(max_frames, mag.shape[1])).astype(int)
+    rough = []
+    for k in idx:
+        col = mag[:, k]
+        if col.max() <= 0:
+            continue
+        peaks, _ = find_peaks(col, height=peak_height * col.max())
+        if len(peaks) < 2:
+            rough.append(0.0)
+            continue
+        rough.append(sensory_dissonance(f[peaks], col[peaks] / col.max()))
+
+    return float(np.mean(rough)) if rough else float("nan")
+
+
 def crest_factor_db(waveform: np.ndarray) -> float:
     """Peak-to-RMS ratio in dB.
 
@@ -263,7 +400,7 @@ def describe(waveform: np.ndarray, sample_rate: int) -> dict[str, float]:
     Returns
     -------
     dict[str, float]
-        Keys: ``duration_s``, ``peak``, ``rms``, ``crest_db``,
+        Keys: ``duration_s``, ``peak``, ``rms``, ``crest_db``, ``roughness``,
         ``articulation``, ``onset_rate``, ``spectral_flatness``,
         ``silence_fraction``.
     """
@@ -276,6 +413,7 @@ def describe(waveform: np.ndarray, sample_rate: int) -> dict[str, float]:
         "peak": float(np.abs(x).max()) if len(x) else float("nan"),
         "rms": float(np.sqrt(np.mean(x ** 2))) if len(x) else float("nan"),
         "crest_db": crest_factor_db(x),
+        "roughness": spectral_roughness(x, sample_rate),
         "articulation": articulation(x, sample_rate),
         "onset_rate": onset_rate(x, sample_rate),
         "spectral_flatness": spectral_flatness(x, sample_rate),

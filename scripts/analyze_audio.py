@@ -14,7 +14,7 @@ Usage
     # Metrics plus a spectrogram PNG per file
     py scripts/analyze_audio.py --spectrogram outputs/chime.wav
 
-    # Compare against the reference files Dr. Malaska approved
+    # Metrics plus reference values and quality targets
     py scripts/analyze_audio.py --compare outputs/my_new_render.wav
 """
 
@@ -35,11 +35,22 @@ if _PROJECT_ROOT not in sys.path:
 from sonify.quality import describe  # noqa: E402
 
 
-# Files Dr. Malaska has listened to and approved — the sound we must not regress from.
-REFERENCE_FILES = [
-    "outputs/chime_fixed.wav",
-    "outputs/chime_full.wav",
-    "outputs/chime_quiet_section.wav",
+# Measured reference values, so --compare does not depend on generated files
+# being present (audio is gitignored and regenerable).
+#
+# Reproduce the "before" column at any time with:
+#     py scripts/run_sonify.py --yes --preset chime-legacy --output outputs/legacy.wav
+REFERENCE_VALUES = [
+    ("chime (tuned)", "roughness 0.049, articulation 0.998, onsets ~5/s"),
+    ("chime-legacy", "roughness 0.227, articulation 0.998, onsets ~5/s"),
+    ("ambient (tuned)", "roughness 0.106, articulation 0.997"),
+    ("event", "roughness 0.2-0.44, articulation 1.000, >97% silence"),
+]
+
+TARGETS = [
+    ("roughness", "<= 0.10 for sustained presets — harmonic harshness"),
+    ("articulation", ">= 0.95 — notes separated by silence, not a drone"),
+    ("onset/s", "~= playback_speed — one attack per row"),
 ]
 
 
@@ -56,16 +67,17 @@ def load_wav(path: str) -> tuple[int, np.ndarray]:
 
 def print_header() -> None:
     print(
-        f"{'file':<38} {'dur':>7} {'rms':>7} {'crest':>7} "
+        f"{'file':<38} {'dur':>7} {'rms':>7} {'crest':>7} {'rough':>7} "
         f"{'artic':>6} {'onset/s':>8} {'flat':>7} {'silence':>8}"
     )
-    print("-" * 92)
+    print("-" * 100)
 
 
 def print_row(path: str, m: dict[str, float]) -> None:
     print(
         f"{os.path.basename(path):<38} "
         f"{m['duration_s']:>6.1f}s {m['rms']:>7.4f} {m['crest_db']:>6.1f}dB "
+        f"{m['roughness']:>7.3f} "
         f"{m['articulation']:>6.3f} {m['onset_rate']:>8.2f} "
         f"{m['spectral_flatness']:>7.4f} {100 * m['silence_fraction']:>7.1f}%"
     )
@@ -109,14 +121,12 @@ def main() -> None:
     p.add_argument("--spectrogram", action="store_true",
                    help="Also write a spectrogram PNG per file")
     p.add_argument("--compare", action="store_true",
-                   help="Also show the approved reference files for comparison")
+                   help="Also print reference values and quality targets")
     p.add_argument("--max-hz", type=float, default=2500.0,
                    help="Upper frequency limit for the spectrogram")
     args = p.parse_args()
 
     targets = list(args.files)
-    if args.compare:
-        targets += [f for f in REFERENCE_FILES if os.path.isfile(f)]
 
     print_header()
     for path in targets:
@@ -133,9 +143,13 @@ def main() -> None:
 
     if args.compare:
         print()
-        print("Reference values from files Dr. Malaska approved:")
-        print("  articulation >= 0.97  (notes separated by silence, not a drone)")
-        print("  onset/s      ~= playback_speed  (one attack per row)")
+        print("Reference values (measured on the full 4000-row dataset):")
+        for name, vals in REFERENCE_VALUES:
+            print(f"  {name:<18} {vals}")
+        print()
+        print("Targets:")
+        for name, rule in TARGETS:
+            print(f"  {name:<14} {rule}")
 
 
 if __name__ == "__main__":
