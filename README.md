@@ -60,6 +60,7 @@ Check the result objectively at any point:
 | Preset | What it is for |
 |---|---|
 | `chime` | Wind-chime aesthetic on 8 pentatonic channels. The main listening preset. |
+| `chime-legacy` | The pre-tuning rendering, kept reproducible. Measurably harsher. |
 | `ambient` | Slow, meditative, low register, heavy smoothing — good for the full descent. |
 | `scientific` | All channels, pure sines, linear scale. Fidelity over musicality. |
 | `event` | Only supra-threshold peaks sound, each pitched by its λmax. See below. |
@@ -101,7 +102,7 @@ with the note *"How many tones would we like to hear? Probably above 10."*
 | `--row-start` | int | None (start) | First row index to include (0-based) |
 | `--row-end` | int | None (end) | Last row index (exclusive) |
 | `--n-bins` | int | detected count | Number of output frequency bins (rebins channels) |
-| `--preset` | choice | none | `chime`, `ambient`, `scientific`, `event` |
+| `--preset` | choice | none | `chime`, `chime-legacy`, `ambient`, `scientific`, `event` |
 | `--yes` | flag | False | Skip interactive band-confirmation prompt |
 | **Trigger** — *which* peaks sound | | | |
 | `--threshold` | float | 0.0 | Rows with no band above this stay silent (0 = off) |
@@ -115,7 +116,8 @@ with the note *"How many tones would we like to hear? Probably above 10."*
 | `--timbre` | choice | chime | Synth voice: `sine`, `bell`, or `chime` |
 | `--timbre-partition` / `--no-timbre-partition` | flag | True | Give each spectral third its own voice |
 | `--adsr-shape` | choice | natural | Note envelope: `tight`, `natural`, `slow` |
-| `--reverb-tail-ms` | float | 0.0 | Decaying tail so notes ring out (600–1500 suits event mode) |
+| `--max-voices` | int | None | Maximum simultaneous voices per row; only the loudest sound |
+| `--tail-ms` | float | 0.0 | Notes decay forward into following rows (see CHANGELOG caveat) |
 | `--smoothing` | float | 0.3 | Temporal amplitude smoothing (0 = off) |
 | `--scale` | choice | log10 | Intensity encoding: `linear`, `log10`, `ln` |
 | `--freq-mode` | choice | index | Pitch layout: `index`, `wavelength`, `pentatonic` |
@@ -211,7 +213,7 @@ scripts/
   run_sonify.py      # CLI entry point with structured logging
   analyze_audio.py   # Quality metrics + spectrograms for any WAV
 docs/                # Investigations and design notes
-tests/               # 183 unit tests
+tests/               # 212 unit tests
 data/raw/            # Raw datasets
 data/reference/      # Wavelength reference table
 outputs/             # Generated .wav and .mp4 files

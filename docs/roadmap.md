@@ -7,7 +7,7 @@ recorded here so they are not silently dropped.
 ## Complete
 
 | Plan item | Notes |
-|---|---|
+| --- | --- |
 | **Phase 1** — V0 sonification script | CSV load, volume / bins / tone range / playback speed, log10-ln-linear switches, band auto-detection with user confirmation, WAV export |
 | **Phase 2** — visual display | Dots/circles, user display options, video output |
 | **Phase 3** — parameter switching | `--tone-source`, `--intensity-source`, and the plan's stated default **tone = λmax** via `--tone-source lambda_max` |
@@ -15,7 +15,6 @@ recorded here so they are not silently dropped.
 | Display feedback (2026-07-09) | Larger pixels (`--marker-size`), square pixels (`--marker-shape`), scale (`--show-colorbar`) |
 | Auto-gain (2026-07-09) | 8 modes: max / 90th percentile / median / mean, each linear or log |
 | User-set playback speed (2026-07-09) | Interactive prompt plus `--playback-speed` |
-| "Add a sustain component?" (2026-07-09) | `--reverb-tail-ms` — a *decaying* tail, so notes ring out without merging into a drone |
 | Two-function design (2026-07-24) | Trigger (`--threshold` / `--trigger-type` / `--target-tones`) separated from intensity encoding (`--scale` / `--gain-mode`) |
 | Threshold study (2026-07-09) | `sonify/events.py` reproduces the spreadsheet exactly; `--target-tones` inverts it |
 | "Frequencies not in the dataset" (2026-07-24) | Investigated and answered — see [frequency_investigation.md](frequency_investigation.md) |
@@ -28,6 +27,24 @@ still takes ~15 minutes. The cost is inherent — 3.6 × 10¹⁰ oscillator samp
 Making this interactive needs a different algorithm (inverse-FFT additive
 synthesis), not more optimization. Realistic channel counts (8–32) render in
 under 30 seconds.
+
+**Sustain / tail-out (Dr. Malaska, 2026-07-09).** Not solved. Both attempts
+failed for instructive reasons, and both are measured:
+
+- A convolution reverb (decaying-noise impulse response) is a *room* model, not
+  a sustain. It smeared every note across the spectrum: roughness 1.80 versus
+  0.71 for an amplitude tail on identical material.
+- A forward-decaying amplitude tail (`--tail-ms`, shipped but defaulting to 0)
+  sounds like tremolo rather than sustain, because the ADSR still retriggers on
+  every row. An 800 ms tail at 25 rows/s is 20 re-attacks; roughness rose from
+  0.44 to 16.6.
+
+The real fix is **note-level envelopes that span rows** instead of the current
+one-segment-per-row model: a note should be triggered once and allowed to decay
+across however many rows it needs, with the ADSR firing on attack only. That is
+a synthesis architecture change and should be scoped on its own. Related:
+stochastic onset timing (real chimes strike irregularly) is deferred for the
+same reason, and because it would decouple audio from the video frame grid.
 
 ## Blocked — needs input
 
