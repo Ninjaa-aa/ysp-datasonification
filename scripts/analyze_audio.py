@@ -41,10 +41,11 @@ from sonify.quality import describe  # noqa: E402
 # Reproduce the "before" column at any time with:
 #     py scripts/run_sonify.py --yes --preset chime-legacy --output outputs/legacy.wav
 REFERENCE_VALUES = [
-    ("chime (tuned)", "roughness 0.049, articulation 0.998, onsets ~5/s"),
-    ("chime-legacy", "roughness 0.227, articulation 0.998, onsets ~5/s"),
-    ("ambient (tuned)", "roughness 0.106, articulation 0.997"),
-    ("event", "roughness 0.2-0.44, articulation 1.000, >97% silence"),
+    ("chime (tuned)", "roughness 0.049, artic 0.998, 96.6% audible"),
+    ("chime-legacy", "roughness 0.227, artic 0.998, 98.8% audible"),
+    ("ambient (tuned)", "roughness 0.067, artic 0.996, 100% audible"),
+    ("event thr400", "roughness 0.381, artic 1.000, only 2.2% audible"),
+    ("event +tail", "5 rows/s, 8000 ms tail -> 34.4% audible"),
 ]
 
 TARGETS = [
