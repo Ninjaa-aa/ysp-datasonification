@@ -108,6 +108,7 @@ class TestOtherMetrics:
             "duration_s", "peak", "rms", "crest_db", "roughness",
             "articulation", "onset_rate", "spectral_flatness",
             "silence_fraction",
+            "audible_fraction", "first_sound_s", "longest_gap_s", "sounding_s",
         }
 
 
@@ -203,3 +204,58 @@ class TestSynthesisArticulationGuard:
         """A sustained drone must fail the guard, proving it has teeth."""
         art = articulation(_continuous_tone(duration_s=5.0), SR)
         assert np.isnan(art) or art < 0.95
+
+
+class TestAudibility:
+    """Guards the blind spot that let four effectively-silent files ship.
+
+    Every other metric here analyses only the frames that *contain* sound, so a
+    13-minute render holding 10 seconds of audio scored well on roughness,
+    articulation and flatness while being, to a listener, silent.
+    """
+
+    @staticmethod
+    def _sparse(n_events, duration_s=60.0, sr=SR):
+        """A few short blips scattered through a long silence."""
+        out = np.zeros(int(duration_s * sr))
+        tone_n = int(0.05 * sr)
+        t = np.arange(tone_n) / sr
+        blip = np.exp(-t / 0.01) * np.sin(2 * np.pi * 440 * t)
+        for i in range(n_events):
+            start = int((i + 0.5) * duration_s * sr / n_events)
+            out[start:start + tone_n] = blip
+        return out
+
+    def test_dense_signal_is_audible(self):
+        from sonify.quality import audibility
+        a = audibility(_continuous_tone(duration_s=10.0), SR)
+        assert a["audible_fraction"] > 0.95
+        assert a["longest_gap_s"] < 1.0
+
+    def test_sparse_render_is_flagged(self):
+        """Teeth: this is the shape of the files that were sent out."""
+        from sonify.quality import audibility
+        a = audibility(self._sparse(n_events=5, duration_s=60.0), SR)
+        assert a["audible_fraction"] < 0.05
+        assert a["longest_gap_s"] > 10.0
+
+    def test_silence_reports_zero(self):
+        from sonify.quality import audibility
+        a = audibility(np.zeros(SR * 5), SR)
+        assert a["audible_fraction"] == 0.0
+        assert a["sounding_s"] == 0.0
+
+    def test_leading_silence_counts_as_a_gap(self):
+        """A file that starts with 30 s of nothing reads as broken."""
+        from sonify.quality import audibility
+        x = np.concatenate([np.zeros(SR * 30), _continuous_tone(duration_s=5.0)])
+        a = audibility(x, SR)
+        assert a["first_sound_s"] >= 29.0
+        assert a["longest_gap_s"] >= 29.0
+
+    def test_articulation_cannot_detect_this(self):
+        """Why a separate metric was needed: articulation scores sparse audio well."""
+        sparse = self._sparse(n_events=5, duration_s=60.0)
+        from sonify.quality import audibility
+        assert articulation(sparse, SR) > 0.9          # looks excellent
+        assert audibility(sparse, SR)["audible_fraction"] < 0.05  # but is silent

@@ -312,6 +312,70 @@ def spectral_roughness(
     return float(np.mean(rough)) if rough else float("nan")
 
 
+def audibility(
+    waveform: np.ndarray,
+    sample_rate: int,
+    floor_db: float = -40.0,
+    frame_ms: float = 50.0,
+) -> dict[str, float]:
+    """How much of the file a listener actually hears, and the worst dead air.
+
+    This exists because every other metric here is blind to it.  ``roughness``,
+    ``articulation`` and ``spectral_flatness`` all analyse only the frames that
+    *contain* sound, so a 13-minute render holding 10 seconds of audio scored
+    beautifully on all three while being, to a listener, silent.  Four such
+    files were sent out before anyone noticed.
+
+    Parameters
+    ----------
+    waveform : np.ndarray
+        1-D mono waveform.
+    sample_rate : int
+        Audio sample rate.
+    floor_db : float
+        Frame RMS below this (dBFS) counts as inaudible on normal playback.
+    frame_ms : float
+        Analysis frame length in milliseconds.
+
+    Returns
+    -------
+    dict[str, float]
+        ``audible_fraction`` (0-1), ``first_sound_s``, ``longest_gap_s``,
+        and ``sounding_s``.  Times are ``nan`` when nothing is audible.
+    """
+    x = np.asarray(waveform, dtype=np.float64)
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+
+    w = max(1, int(sample_rate * frame_ms / 1000.0))
+    n = len(x) // w
+    if n < 1:
+        return {"audible_fraction": 0.0, "first_sound_s": float("nan"),
+                "longest_gap_s": float("nan"), "sounding_s": 0.0}
+
+    frames = x[: n * w].reshape(n, w)
+    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    audible = rms > 10.0 ** (floor_db / 20.0)
+    idx = np.flatnonzero(audible)
+    step = frame_ms / 1000.0
+
+    if idx.size == 0:
+        return {"audible_fraction": 0.0, "first_sound_s": float("nan"),
+                "longest_gap_s": float(n * step), "sounding_s": 0.0}
+
+    gaps = np.diff(idx) * step if idx.size > 1 else np.array([0.0])
+    # Silence before the first sound and after the last also counts as dead air.
+    lead = idx[0] * step
+    trail = (n - 1 - idx[-1]) * step
+
+    return {
+        "audible_fraction": float(idx.size / n),
+        "first_sound_s": float(lead),
+        "longest_gap_s": float(max(gaps.max(), lead, trail)),
+        "sounding_s": float(idx.size * step),
+    }
+
+
 def crest_factor_db(waveform: np.ndarray) -> float:
     """Peak-to-RMS ratio in dB.
 
@@ -402,7 +466,9 @@ def describe(waveform: np.ndarray, sample_rate: int) -> dict[str, float]:
     dict[str, float]
         Keys: ``duration_s``, ``peak``, ``rms``, ``crest_db``, ``roughness``,
         ``articulation``, ``onset_rate``, ``spectral_flatness``,
-        ``silence_fraction``.
+        ``silence_fraction``, plus everything from :func:`audibility`
+        (``audible_fraction``, ``first_sound_s``, ``longest_gap_s``,
+        ``sounding_s``).
     """
     x = np.asarray(waveform, dtype=np.float64)
     if x.ndim > 1:
@@ -414,6 +480,7 @@ def describe(waveform: np.ndarray, sample_rate: int) -> dict[str, float]:
         "rms": float(np.sqrt(np.mean(x ** 2))) if len(x) else float("nan"),
         "crest_db": crest_factor_db(x),
         "roughness": spectral_roughness(x, sample_rate),
+        **audibility(x, sample_rate),
         "articulation": articulation(x, sample_rate),
         "onset_rate": onset_rate(x, sample_rate),
         "spectral_flatness": spectral_flatness(x, sample_rate),

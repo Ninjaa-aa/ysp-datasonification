@@ -51,6 +51,8 @@ TARGETS = [
     ("roughness", "<= 0.10 for sustained presets — harmonic harshness"),
     ("articulation", ">= 0.95 — notes separated by silence, not a drone"),
     ("onset/s", "~= playback_speed — one attack per row"),
+    ("AUDIBLE", ">= 20% — below this the render reads as silent"),
+    ("max gap", "<= ~10 s — longer and a listener assumes it has stopped"),
 ]
 
 
@@ -67,19 +69,18 @@ def load_wav(path: str) -> tuple[int, np.ndarray]:
 
 def print_header() -> None:
     print(
-        f"{'file':<38} {'dur':>7} {'rms':>7} {'crest':>7} {'rough':>7} "
-        f"{'artic':>6} {'onset/s':>8} {'flat':>7} {'silence':>8}"
+        f"{'file':<34} {'dur':>7} {'rms':>7} {'rough':>7} {'artic':>6} "
+        f"{'onset/s':>8} {'AUDIBLE':>8} {'max gap':>8}"
     )
-    print("-" * 100)
+    print("-" * 92)
 
 
 def print_row(path: str, m: dict[str, float]) -> None:
     print(
-        f"{os.path.basename(path):<38} "
-        f"{m['duration_s']:>6.1f}s {m['rms']:>7.4f} {m['crest_db']:>6.1f}dB "
-        f"{m['roughness']:>7.3f} "
+        f"{os.path.basename(path):<34} "
+        f"{m['duration_s']:>6.1f}s {m['rms']:>7.4f} {m['roughness']:>7.3f} "
         f"{m['articulation']:>6.3f} {m['onset_rate']:>8.2f} "
-        f"{m['spectral_flatness']:>7.4f} {100 * m['silence_fraction']:>7.1f}%"
+        f"{100 * m['audible_fraction']:>7.1f}% {m['longest_gap_s']:>7.1f}s"
     )
 
 
