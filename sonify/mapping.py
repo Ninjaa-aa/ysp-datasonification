@@ -666,6 +666,7 @@ def apply_envelope_tail(
     seconds_per_row: float,
     tail_ms: float,
     return_sources: bool = False,
+    mode: str = "add",
 ):
     """Let each row's amplitude decay forward into the rows that follow.
 
@@ -693,15 +694,38 @@ def apply_envelope_tail(
         lambda_max``): the tail must keep sounding the *pitch of the note that
         started it*, otherwise it holds the amplitude while the pitch jumps
         row to row, smearing separate events into one another.
+    mode : str
+        ``'add'`` (default) — the decayed tail is *added* to each row's own
+        value, per Dr. Malaska's 2026-07-29 specification:
+
+            row[n] = decay(row[n-1]) + original[n]
+
+        ``'max'`` — the louder of the tail and the row's own value wins.
+
+        ``'add'`` is correct and ``'max'`` is kept only for comparison.  Under
+        ``'max'`` a weaker signal arriving beneath a decaying tail is erased
+        entirely: a strike of 5 following a strike of 20 reads as 19.0, i.e.
+        indistinguishable from the tail alone.  Additively it reads 24.0, so
+        the second event survives as a bump on the decay.  This was exactly
+        Dr. Malaska's point — "if two strong signals occur near each other,
+        the first one doesn't wipe out the following signal".
 
     Returns
     -------
     np.ndarray or tuple[np.ndarray, np.ndarray]
-        Copy with each channel's amplitude decaying forward.  A row keeps its
-        own value whenever that is louder than the decaying tail, so genuine
-        new strikes always cut through.  With ``return_sources=True``, also
-        returns an int array of originating row indices.
+        Copy with each channel's amplitude decaying forward, renormalized so
+        the peak is unchanged (addition can otherwise push values past full
+        scale).  With ``return_sources=True``, also returns an int array of
+        originating row indices.
+
+    Raises
+    ------
+    ValueError
+        If ``mode`` is not ``'add'`` or ``'max'``.
     """
+    if mode not in ("add", "max"):
+        raise ValueError(f"mode must be 'add' or 'max', got '{mode}'")
+
     result = matrix.copy()
     sources = np.tile(
         np.arange(matrix.shape[0])[:, np.newaxis], (1, matrix.shape[1])
@@ -710,12 +734,26 @@ def apply_envelope_tail(
     if tail_ms <= 0:
         return (result, sources) if return_sources else result
 
+    original = matrix.copy()
     decay_per_row = float(np.exp(-seconds_per_row / (tail_ms / 1000.0)))
+    peak_before = float(result.max())
+
     for row in range(1, result.shape[0]):
         decayed = result[row - 1] * decay_per_row
-        held = decayed > result[row]
-        result[row] = np.where(held, decayed, result[row])
+        if mode == "add":
+            result[row] = decayed + original[row]
+            # The tail owns the row only while it dominates the new strike.
+            held = decayed > original[row]
+        else:
+            held = decayed > result[row]
+            result[row] = np.where(held, decayed, result[row])
         sources[row] = np.where(held, sources[row - 1], sources[row])
+
+    # Adding tails can exceed the original peak; rescale so downstream gain
+    # staging sees the same range it would without a tail.
+    peak_after = float(result.max())
+    if peak_after > peak_before > 0:
+        result *= peak_before / peak_after
 
     return (result, sources) if return_sources else result
 

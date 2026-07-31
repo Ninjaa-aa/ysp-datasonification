@@ -174,11 +174,13 @@ PRESETS = {
         # between events. At 10 rows/s the median gap is 21.6 s (max 53 s),
         # which reads as dead air rather than sparse wind chimes.
         "playback_speed":     25.0,
-        # tail_ms is deliberately 0. A forward-decaying amplitude tail sounds
-        # like tremolo rather than sustain, because the ADSR still retriggers
-        # on every row: an 800ms tail at 25 rows/s is 20 re-attacks, and
-        # measured roughness rose from 0.44 to 16.6. Real sustain needs
-        # note-level envelopes that span rows; see docs/roadmap.md.
+        # tail_ms stays 0 at this speed. A tail only helps once the note
+        # spacing is wide enough to carry it — Dr. Malaska predicted exactly
+        # this ("unless timing was changed"). Measured roughness with an 800 ms
+        # tail: 0.38 -> 0.80 at 25 rows/s, but 0.101 -> 0.063 at 5 rows/s,
+        # where articulation also improves from 0.759 to 0.997.
+        # For the sustained rendering use:
+        #   --preset event --playback-speed 5 --tail-ms 800
         "tail_ms":            0.0,
     },
 }

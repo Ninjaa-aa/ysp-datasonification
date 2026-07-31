@@ -161,12 +161,47 @@ class TestEnvelopeTail:
         long_ = apply_envelope_tail(m, 0.1, 1000.0)
         assert long_[3, 0] > short[3, 0]
 
-    def test_new_strike_cuts_through_the_tail(self):
-        """A genuine new note must never be masked by a decaying one."""
+    def test_new_strike_rises_above_the_tail(self):
+        """A genuine new note must stay audible on top of a decaying one."""
         from sonify.mapping import apply_envelope_tail
-        m = np.array([[1.0], [0.0], [0.8]])
-        out = apply_envelope_tail(m, 0.1, 500.0)
-        assert out[2, 0] == 0.8
+        struck = np.array([[1.0], [0.0], [0.8]])
+        silent = np.array([[1.0], [0.0], [0.0]])
+        out_struck = apply_envelope_tail(struck, 0.1, 500.0)
+        out_silent = apply_envelope_tail(silent, 0.1, 500.0)
+        assert out_struck[2, 0] > out_silent[2, 0]
+
+    def test_additive_preserves_a_signal_that_max_would_erase(self):
+        """Dr. Malaska's point: a strong strike must not wipe out the next one.
+
+        Measured on the borehole data, max-hold erases 12-20% of real strikes
+        depending on playback speed; additive keeps every one of them.
+        """
+        from sonify.mapping import apply_envelope_tail
+        m = np.array([[20.0], [5.0], [0.0], [0.0]])
+        tail_only = np.array([[20.0], [0.0], [0.0], [0.0]])
+
+        add = apply_envelope_tail(m, 1 / 25.0, 800.0, mode="add")
+        add_ref = apply_envelope_tail(tail_only, 1 / 25.0, 800.0, mode="add")
+        mx = apply_envelope_tail(m, 1 / 25.0, 800.0, mode="max")
+        mx_ref = apply_envelope_tail(tail_only, 1 / 25.0, 800.0, mode="max")
+
+        # Additive: the 5.0 strike lifts row 1 above the bare tail.
+        assert add[1, 0] > add_ref[1, 0]
+        # max-hold: row 1 is identical to the bare tail — the strike vanished.
+        assert mx[1, 0] == pytest.approx(mx_ref[1, 0])
+
+    def test_invalid_mode_raises(self):
+        from sonify.mapping import apply_envelope_tail
+        with pytest.raises(ValueError, match="mode"):
+            apply_envelope_tail(np.ones((2, 1)), 0.1, 500.0, mode="blend")
+
+    def test_peak_is_preserved(self):
+        """Adding tails must not push the matrix past its original peak."""
+        from sonify.mapping import apply_envelope_tail
+        rng = np.random.default_rng(3)
+        m = rng.random((60, 3))
+        out = apply_envelope_tail(m, 0.1, 900.0, mode="add")
+        assert out.max() == pytest.approx(m.max(), rel=1e-9)
 
     def test_never_amplifies(self):
         from sonify.mapping import apply_envelope_tail

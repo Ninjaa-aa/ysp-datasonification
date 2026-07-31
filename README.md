@@ -47,6 +47,14 @@ pip install -r requirements.txt
 
 The last command produces both `outputs/quick_start.wav` and `outputs/quick_start.mp4`.
 
+> [!IMPORTANT]
+> `--max-frames` defaults to **500** as a safety cap. A longer run is silently
+> truncated unless you raise it — pass `--max-frames 4000` for the full descent.
+
+Rendering costs roughly **0.12 s per frame** at 1280×720, so the full 4000-row
+descent takes about 8 minutes. The audio itself renders in seconds; the frames
+are the expensive part.
+
 Check the result objectively at any point:
 
 ```bash
